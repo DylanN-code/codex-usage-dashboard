@@ -13,6 +13,15 @@ const validSpeeds = new Set(["auto", "standard", "fast"]);
 const validThemes = new Set(["dark", "light", "system"]);
 const compositionKeys = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"];
 const billingKeys = ["cachedInputTokens", "inputTokens", "outputTokens", "reasoningOutputTokens"];
+const LOCAL_ACCESS_PROMPT_KEY = "codex-usage-local-access-choice";
+const MODEL_PRICING_USD_PER_1M = [
+  { pattern: /^gpt-5\.5($|[-:])/i, input: 5.0, cachedInput: 0.5, output: 30.0 },
+  { pattern: /^gpt-5\.4($|[-:])/i, input: 2.5, cachedInput: 0.25, output: 15.0 },
+  { pattern: /^gpt-5\.3-codex($|[-:])/i, input: 1.75, cachedInput: 0.175, output: 14.0 },
+  { pattern: /^gpt-5($|[-:])/i, input: 1.25, cachedInput: 0.125, output: 10.0 },
+  { pattern: /^chat-latest($|[-:])/i, input: 5.0, cachedInput: 0.5, output: 30.0 },
+];
+const DEFAULT_MODEL_PRICING_USD_PER_1M = { input: 1.25, cachedInput: 0.125, output: 10.0 };
 
 const state = {
   data: null,
@@ -190,6 +199,32 @@ function formatPercent(value) {
   }).format(value);
 }
 
+function platformCodexPathHint() {
+  const platform = (navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || "").toLowerCase();
+  if (platform.includes("win")) return "%USERPROFILE%\\.codex";
+  if (platform.includes("android")) return "$HOME/.codex";
+  return "$HOME/.codex";
+}
+
+function pricingForModel(model = "") {
+  const normalized = String(model || "").toLowerCase();
+  for (const rule of MODEL_PRICING_USD_PER_1M) {
+    if (rule.pattern.test(normalized)) {
+      return rule;
+    }
+  }
+  return DEFAULT_MODEL_PRICING_USD_PER_1M;
+}
+
+function estimateCostUsd({ model, inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens }) {
+  const pricing = pricingForModel(model);
+  const totalOutput = number(outputTokens) + number(reasoningOutputTokens);
+  const inputCost = number(inputTokens) * (pricing.input / 1_000_000);
+  const cachedInputCost = number(cachedInputTokens) * (pricing.cachedInput / 1_000_000);
+  const outputCost = totalOutput * (pricing.output / 1_000_000);
+  return inputCost + cachedInputCost + outputCost;
+}
+
 function sum(rows, key) {
   return rows.reduce((total, row) => total + number(row[key]), 0);
 }
@@ -323,8 +358,9 @@ function syncUrl() {
 
 function renderDataSource(payload) {
   if (payload.localParse) {
-    const source = payload.localSourceLabel || ".codex";
-    els.dataSource.textContent = `Data source: ${source} loaded directly in browser from local Codex JSONL files.`;
+    const source = payload.localSourceLabel || "{basePath}/.codex";
+    const hint = platformCodexPathHint();
+    els.dataSource.textContent = `Data source: ${source} loaded directly in browser from local Codex JSONL files. Default path hint: ${hint}.`;
     return;
   }
   const sources = (payload.codexHomes || []).map((item) => item.home).join(", ");
@@ -394,7 +430,7 @@ async function getCodexRootHandleFromPicker() {
     throw new Error("Local directory read permission was not granted.");
   }
   if (picked.name === ".codex") {
-    return { codexHandle: picked, label: ".codex" };
+    return { codexHandle: picked, label: "{basePath}/.codex" };
   }
   try {
     const codexHandle = await picked.getDirectoryHandle(".codex", { create: false });
@@ -425,12 +461,16 @@ async function collectJsonlFiles(dirHandle, prefix = "") {
 function usageFromTokenCount(lastTokenUsage = {}) {
   const output = number(lastTokenUsage.output_tokens);
   const reasoning = number(lastTokenUsage.reasoning_output_tokens);
+  const inputTokens = number(lastTokenUsage.input_tokens);
+  const cachedInputTokens = number(lastTokenUsage.cached_input_tokens);
+  const outputTokens = Math.max(output - reasoning, 0);
+  const reasoningOutputTokens = reasoning;
   return {
-    cachedInputTokens: number(lastTokenUsage.cached_input_tokens),
+    cachedInputTokens,
     costUSD: 0,
-    inputTokens: number(lastTokenUsage.input_tokens),
-    outputTokens: Math.max(output - reasoning, 0),
-    reasoningOutputTokens: reasoning,
+    inputTokens,
+    outputTokens,
+    reasoningOutputTokens,
     totalTokens: number(lastTokenUsage.total_tokens),
   };
 }
@@ -480,6 +520,13 @@ async function parseSessionJsonlFile(fileHandle, relativePath, scopeName) {
         ? new Date(completedAt * 1000)
         : new Date(row.timestamp || file.lastModified);
       const usage = usageFromTokenCount(latestTokenUsage);
+      usage.costUSD = estimateCostUsd({
+        model: currentModel || "unknown",
+        inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        outputTokens: usage.outputTokens,
+        reasoningOutputTokens: usage.reasoningOutputTokens,
+      });
       turns.push({
         ...usage,
         date: isoDate(eventDate),
@@ -658,9 +705,6 @@ async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
     state.localSourceLabel = localSourceLabel;
     state.sourceMode = "local";
     state.data = aggregateLocalTurns(turns, localSourceLabel);
-    if (state.metric === "costUSD") {
-      state.metric = "totalTokens";
-    }
     initializeModelVisibility();
     populateModelFilter();
     syncControls();
@@ -680,9 +724,56 @@ async function loadUsageFromLocalPicker() {
     const { codexHandle, label } = await getCodexRootHandleFromPicker();
     await loadUsageFromLocalHandle(codexHandle, label);
   } catch (error) {
+    if (error?.name === "AbortError") {
+      els.status.classList.remove("error");
+      els.status.textContent = "Local folder selection canceled. Use Select .codex Path when you're ready.";
+      return;
+    }
     els.status.classList.add("error");
     els.status.textContent = error.message;
   }
+}
+
+function renderInitialLocalAccessPrompt() {
+  return new Promise((resolve) => {
+    els.status.classList.remove("error");
+    els.status.innerHTML = `
+      <div class="status-consent">
+        <span>Allow local usage lookup? If you agree, the app will first search the assumed default path <code>{basePath}/.codex</code>. If you skip, use <strong>Select .codex Path</strong> anytime.</span>
+        <div class="status-consent-actions">
+          <button class="primary" type="button" data-local-consent="allow">Allow and search default .codex path</button>
+          <button class="secondary" type="button" data-local-consent="skip">Not now</button>
+        </div>
+      </div>
+    `;
+
+    const allowButton = els.status.querySelector('[data-local-consent="allow"]');
+    const skipButton = els.status.querySelector('[data-local-consent="skip"]');
+
+    allowButton?.addEventListener("click", async () => {
+      localStorage.setItem(LOCAL_ACCESS_PROMPT_KEY, "granted");
+      await loadUsage();
+      resolve();
+    }, { once: true });
+
+    skipButton?.addEventListener("click", () => {
+      localStorage.setItem(LOCAL_ACCESS_PROMPT_KEY, "declined");
+      els.status.classList.remove("error");
+      els.status.textContent = "Local access skipped. Use Select .codex Path to load local usage data.";
+      resolve();
+    }, { once: true });
+  });
+}
+
+async function loadInitialData() {
+  const savedChoice = localStorage.getItem(LOCAL_ACCESS_PROMPT_KEY);
+
+  if (!savedChoice && typeof window.showDirectoryPicker === "function") {
+    await renderInitialLocalAccessPrompt();
+    if (state.data) return;
+  }
+
+  await loadUsage();
 }
 
 function allWidgets() {
@@ -866,7 +957,7 @@ async function loadUsage() {
       : "";
     els.status.textContent = `${error.message}${hint}`;
     if (els.dataSource) {
-      els.dataSource.textContent = "Data source: default ~/.codex not available. Select your own .codex path.";
+      els.dataSource.textContent = `Data source: default ${platformCodexPathHint()} not available. Select your own {basePath}/.codex path.`;
     }
   } finally {
     setLoading(false);
@@ -1704,4 +1795,4 @@ setupTooltips();
 setupDragAndDrop();
 setupWidgets();
 applyTheme();
-loadUsage();
+loadInitialData();

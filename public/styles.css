@@ -251,6 +251,25 @@ h2 {
   color: var(--muted);
 }
 
+.status-consent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.status-consent code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.9em;
+}
+
+.status-consent-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .data-source {
   margin: -6px 0 12px;
   padding: 8px 12px;
@@ -375,13 +394,90 @@ select {
 .kpi {
   min-height: 102px;
   padding: 14px;
+  position: relative;
+  overflow: visible;
 }
 
-.kpi span {
+.kpi > span {
   display: block;
   color: var(--muted);
   font-size: 0.86rem;
   font-weight: 700;
+}
+
+.kpi-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+}
+
+.info-popover {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.info-popover::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  bottom: 100%;
+  width: 280px;
+  height: 16px;
+}
+
+.info-trigger {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0;
+  line-height: 1;
+}
+
+.info-tooltip {
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% - 12px);
+  min-width: 260px;
+  max-width: 320px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  padding: 10px 12px;
+  font-size: var(--font-small);
+  font-weight: 600;
+  z-index: 24;
+  display: block;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  text-align: left;
+  transition: opacity 120ms ease, visibility 120ms ease;
+}
+
+.info-tooltip a {
+  color: var(--teal);
+  font-weight: 800;
+  text-decoration: none;
+  margin-left: 4px;
+}
+
+.info-popover:hover .info-tooltip {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.summary-panel[data-widget-id="overview"] {
+  overflow: visible;
 }
 
 .kpi strong {
@@ -996,6 +1092,19 @@ td {
   inset: 0;
   z-index: 20;
   background: rgba(0, 0, 0, 0.32);
+}
+
+.app-footer {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: var(--font-small);
+  text-align: center;
+}
+
+.app-footer a {
+  color: var(--teal);
+  font-weight: 700;
+  text-decoration: none;
 }
 
 @media (max-width: 900px) {

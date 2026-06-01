@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="author" content="DylanN-code">
     <title>Codex Usage Dashboard</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -75,7 +76,16 @@
           </div>
           <div class="kpis">
             <article class="kpi">
-              <span>Total cost</span>
+              <span class="kpi-label">
+                Total cost
+                <span class="info-popover">
+                  <button class="info-trigger" type="button" aria-label="Cost calculation details">i</button>
+                  <span class="info-tooltip" role="tooltip">
+                    Cost uses estimated standard short-context pricing.
+                    <a href="https://platform.openai.com/docs/pricing" target="_blank" rel="noopener noreferrer">How costs are calculated</a>
+                  </span>
+                </span>
+              </span>
               <strong id="totalCost">-</strong>
             </article>
             <article class="kpi">
@@ -228,6 +238,9 @@
         <div id="widgetList" class="widget-list"></div>
       </aside>
       <div id="widgetBackdrop" class="widget-backdrop" hidden></div>
+      <footer class="app-footer">
+        Created by <a href="https://github.com/DylanN-code" target="_blank" rel="noopener noreferrer">DylanN-code</a>.
+      </footer>
     </main>
 
     <script src="/app.js"></script>

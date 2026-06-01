@@ -11,9 +11,10 @@ const host = process.env.HOST || "127.0.0.1";
 const preferredPort = Number(process.env.PORT || 3210);
 const publicDir = path.join(__dirname, "public");
 const speedModes = new Set(["auto", "standard", "fast"]);
+const defaultCodexHome = path.join(os.homedir(), ".codex");
 
 function codexHomes() {
-  const raw = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const raw = process.env.CODEX_HOME || defaultCodexHome;
   return raw.split(",").map((entry) => entry.trim()).filter(Boolean);
 }
 
@@ -63,6 +64,31 @@ function homeStatus(home) {
     sessionsExists: fs.existsSync(sessions),
     archivedSessionsExists: fs.existsSync(archived),
   };
+}
+
+function codexHomeValidation() {
+  const statuses = codexHomes().map(homeStatus);
+  const hasExistingHome = statuses.some((entry) => entry.exists);
+  const hasUsageFolders = statuses.some((entry) => entry.sessionsExists || entry.archivedSessionsExists);
+
+  if (!hasExistingHome) {
+    return {
+      ok: false,
+      statuses,
+      detail: `Default Codex path not found: ${defaultCodexHome}`,
+    };
+  }
+
+  if (!hasUsageFolders) {
+    const paths = statuses.map((entry) => entry.home).join(", ");
+    return {
+      ok: false,
+      statuses,
+      detail: `No usage folders found under: ${paths}. Expected sessions/ or archived_sessions/.`,
+    };
+  }
+
+  return { ok: true, statuses, detail: "" };
 }
 
 function startOfIsoWeek(date) {
@@ -142,16 +168,31 @@ app.use(compression());
 app.use(express.static(publicDir));
 
 app.get("/api/health", (req, res) => {
+  const validation = codexHomeValidation();
   res.json({
     ok: true,
     package: "@ccusage/codex",
     ccusageBin: ccusageBin(),
-    codexHomes: codexHomes().map(homeStatus),
+    defaultCodexHome,
+    codexHomes: validation.statuses,
+    codexHomeReady: validation.ok,
+    codexHomeDetail: validation.detail,
   });
 });
 
 app.get("/api/usage", async (req, res) => {
   const speed = speedModes.has(String(req.query.speed)) ? String(req.query.speed) : "auto";
+  const validation = codexHomeValidation();
+
+  if (!validation.ok) {
+    res.status(404).json({
+      error: "Unable to find Codex usage at default path.",
+      detail: validation.detail,
+      defaultCodexHome,
+      codexHomes: validation.statuses,
+    });
+    return;
+  }
 
   try {
     const [daily, monthly, sessions] = await Promise.all([
@@ -163,7 +204,8 @@ app.get("/api/usage", async (req, res) => {
     res.json({
       generatedAt: new Date().toISOString(),
       speed,
-      codexHomes: codexHomes().map(homeStatus),
+      defaultCodexHome,
+      codexHomes: validation.statuses,
       daily: daily.daily || [],
       weekly: weeklyFromDaily(daily.daily || []),
       monthly: monthly.monthly || [],

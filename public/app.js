@@ -328,7 +328,8 @@ function renderDataSource(payload) {
     return;
   }
   const sources = (payload.codexHomes || []).map((item) => item.home).join(", ");
-  els.dataSource.textContent = `Data source: ${sources || "unknown"} via ccusage codex daily, monthly, and session reports.`;
+  const fallback = payload.defaultCodexHome ? ` (default ${payload.defaultCodexHome})` : "";
+  els.dataSource.textContent = `Data source: ${sources || "unknown"}${fallback} via ccusage codex daily, monthly, and session reports.`;
 }
 
 function startOfIsoWeek(date) {
@@ -835,10 +836,19 @@ async function loadUsage() {
 
   try {
     const response = await fetch(`/api/usage?speed=${encodeURIComponent(state.speed)}`);
-    const payload = await response.json();
+    const isJson = (response.headers.get("content-type") || "").includes("application/json");
+    const payload = isJson ? await response.json() : null;
+
+    if (!isJson || !payload) {
+      throw new Error("API usage endpoint is unavailable in this deployment.");
+    }
 
     if (!response.ok) {
-      throw new Error(payload.detail || payload.error || "Unknown ccusage error");
+      const baseError = payload?.detail || payload?.error || `Request failed (${response.status})`;
+      const homes = payload?.codexHomes || [];
+      const pathList = homes.map((home) => home.home).filter(Boolean);
+      const pathHint = pathList.length ? ` Checked: ${pathList.join(", ")}.` : "";
+      throw new Error(`${baseError}${pathHint}`);
     }
 
     state.data = payload;
@@ -852,9 +862,12 @@ async function loadUsage() {
   } catch (error) {
     els.status.classList.add("error");
     const hint = typeof window.showDirectoryPicker === "function"
-      ? ` API unavailable. Click "Load .codex" to read local data in browser.`
+      ? ` Click "Select .codex Path" to choose your local .codex folder.`
       : "";
     els.status.textContent = `${error.message}${hint}`;
+    if (els.dataSource) {
+      els.dataSource.textContent = "Data source: default ~/.codex not available. Select your own .codex path.";
+    }
   } finally {
     setLoading(false);
   }

@@ -12,6 +12,7 @@ const preferredPort = Number(process.env.PORT || 3210);
 const publicDir = path.join(__dirname, "public");
 const speedModes = new Set(["auto", "standard", "fast"]);
 const defaultCodexHome = path.join(os.homedir(), ".codex");
+const corsOrigin = process.env.CCUSAGE_CORS_ORIGIN || "*";
 
 function codexHomes() {
   const raw = process.env.CODEX_HOME || defaultCodexHome;
@@ -164,6 +165,16 @@ function weeklyFromDaily(daily) {
 }
 
 app.use(helmet({ contentSecurityPolicy: false }));
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", corsOrigin);
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
 app.use(compression());
 app.use(express.static(publicDir));
 

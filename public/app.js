@@ -27,6 +27,7 @@ const state = {
   sourceMode: query.get("source") === "local" ? "local" : "api",
   localCodexHandle: null,
   localSourceLabel: "",
+  apiBase: "",
   view: validViews.has(query.get("view")) ? query.get("view") : "daily",
   metric: validMetrics.has(query.get("metric")) ? query.get("metric") : "costUSD",
   range: validRanges.has(query.get("range")) ? query.get("range") : "30",
@@ -664,6 +665,43 @@ function aggregateLocalTurns(turns, localSourceLabel) {
   };
 }
 
+function normalizeApiBase(base) {
+  if (!base) return "";
+  return String(base).replace(/\/+$/, "");
+}
+
+function usageCandidates() {
+  const set = new Set();
+  const currentBase = normalizeApiBase(state.apiBase);
+
+  if (currentBase) set.add(currentBase);
+  set.add("");
+
+  return [...set];
+}
+
+async function fetchUsageFromBase(apiBase) {
+  const base = normalizeApiBase(apiBase);
+  const endpoint = `${base}/api/usage?speed=${encodeURIComponent(state.speed)}`;
+  const response = await fetch(endpoint);
+  const isJson = (response.headers.get("content-type") || "").includes("application/json");
+  const payload = isJson ? await response.json() : null;
+
+  if (!isJson || !payload) {
+    throw new Error(`API usage endpoint is unavailable at ${base || window.location.origin}.`);
+  }
+
+  if (!response.ok) {
+    const baseError = payload?.detail || payload?.error || `Request failed (${response.status})`;
+    const homes = payload?.codexHomes || [];
+    const pathList = homes.map((home) => home.home).filter(Boolean);
+    const pathHint = pathList.length ? ` Checked: ${pathList.join(", ")}.` : "";
+    throw new Error(`${baseError}${pathHint}`);
+  }
+
+  return { payload, base };
+}
+
 async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
   setLoading(true);
   els.status.classList.remove("error");
@@ -921,38 +959,40 @@ async function loadUsage() {
   els.status.textContent = "Loading Codex usage...";
 
   try {
-    const response = await fetch(`/api/usage?speed=${encodeURIComponent(state.speed)}`);
-    const isJson = (response.headers.get("content-type") || "").includes("application/json");
-    const payload = isJson ? await response.json() : null;
+    let loaded = null;
+    let lastError = null;
 
-    if (!isJson || !payload) {
-      throw new Error("API usage endpoint is unavailable in this deployment.");
+    for (const candidate of usageCandidates()) {
+      try {
+        loaded = await fetchUsageFromBase(candidate);
+        break;
+      } catch (error) {
+        lastError = error;
+      }
     }
 
-    if (!response.ok) {
-      const baseError = payload?.detail || payload?.error || `Request failed (${response.status})`;
-      const homes = payload?.codexHomes || [];
-      const pathList = homes.map((home) => home.home).filter(Boolean);
-      const pathHint = pathList.length ? ` Checked: ${pathList.join(", ")}.` : "";
-      throw new Error(`${baseError}${pathHint}`);
+    if (!loaded) {
+      throw lastError || new Error("API usage endpoint is unavailable in this deployment.");
     }
 
+    const { payload, base } = loaded;
     state.data = payload;
+    state.apiBase = base;
     state.sourceMode = "api";
     initializeModelVisibility();
     populateModelFilter();
     syncControls();
-    renderDataSource(payload);
+    renderDataSource({ ...payload, apiBase: base });
     els.status.textContent = `Updated ${new Date(payload.generatedAt).toLocaleString()}`;
     render();
   } catch (error) {
     els.status.classList.add("error");
     const hint = typeof window.showDirectoryPicker === "function"
-      ? ` Click "Select .codex Path" to choose your local .codex folder.`
+      ? ` Click "Select .codex Path" for local estimate mode.`
       : "";
     els.status.textContent = `${error.message}${hint}`;
     if (els.dataSource) {
-      els.dataSource.textContent = `Data source: default ${platformCodexPathHint()} not available. Select your own {basePath}/.codex path.`;
+      els.dataSource.textContent = "Data source: public API unavailable. Select {basePath}/.codex path for local estimate mode.";
     }
   } finally {
     setLoading(false);

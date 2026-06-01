@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Codex Usage Dashboard</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">@ccusage/codex dashboard</p>
+          <h1>Codex Usage</h1>
+        </div>
+        <div class="actions" aria-label="Dashboard controls">
+          <div class="segmented" role="group" aria-label="Theme mode">
+            <button class="segment" data-theme-mode="dark" type="button">Dark</button>
+            <button class="segment" data-theme-mode="light" type="button">White</button>
+            <button class="segment active" data-theme-mode="system" type="button">System</button>
+          </div>
+          <div class="segmented" role="group" aria-label="Pricing speed">
+            <button class="segment active" data-speed="auto" type="button">Auto</button>
+            <button class="segment" data-speed="standard" type="button">Standard</button>
+            <button class="segment" data-speed="fast" type="button">Fast</button>
+          </div>
+          <button id="refreshButton" class="primary" type="button">Refresh</button>
+          <button id="widgetsButton" class="secondary" type="button" aria-haspopup="dialog" aria-controls="widgetSidebar" aria-expanded="false">Widgets</button>
+        </div>
+      </header>
+
+      <section id="status" class="status" aria-live="polite">Loading Codex usage...</section>
+      <section id="dataSource" class="data-source" aria-live="polite">Data source: loading...</section>
+
+      <div id="dashboardPanels" class="dashboard-panels">
+        <section class="filter-panel draggable-panel widget widget-resizable" data-panel-id="filters" data-widget-id="filters" data-widget-label="Filters" draggable="true" aria-label="Dashboard filters">
+          <div class="panel-bar">
+            <div>
+              <h2>Filters</h2>
+              <p>URL-synced search parameters</p>
+            </div>
+            <button class="drag-handle" type="button" aria-label="Drag filters panel"></button>
+          </div>
+          <div class="filter-grid">
+            <label>
+              Search
+              <input id="searchInput" type="search" placeholder="model, date, session">
+            </label>
+            <label>
+              Start
+              <input id="startDateInput" type="date">
+            </label>
+            <label>
+              End
+              <input id="endDateInput" type="date">
+            </label>
+            <label>
+              Model
+              <select id="modelSelect">
+                <option value="all">All models</option>
+              </select>
+            </label>
+            <button id="clearFiltersButton" class="secondary" type="button">Clear</button>
+          </div>
+        </section>
+
+        <section class="summary-panel draggable-panel widget widget-resizable" data-panel-id="summary" data-widget-id="overview" data-widget-label="Overview" draggable="true" aria-label="Usage totals">
+          <div class="panel-bar">
+            <div>
+              <h2>Overview</h2>
+              <p id="summaryScope">All usage</p>
+            </div>
+            <button class="drag-handle" type="button" aria-label="Drag overview panel"></button>
+          </div>
+          <div class="kpis">
+            <article class="kpi">
+              <span>Total cost</span>
+              <strong id="totalCost">-</strong>
+            </article>
+            <article class="kpi">
+              <span>Total tokens</span>
+              <strong id="totalTokens">-</strong>
+            </article>
+            <article class="kpi">
+              <span>Cached input</span>
+              <strong id="cachedTokens">-</strong>
+            </article>
+            <article class="kpi">
+              <span>Output and reasoning</span>
+              <strong id="outputTokens">-</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="insights-section draggable-panel widget widget-resizable" data-panel-id="insights" data-widget-id="token-context" data-widget-label="Token Context" draggable="true" aria-label="Token insights">
+          <div class="panel-bar">
+            <div>
+              <h2>Token Context</h2>
+              <p id="insightWindow">-</p>
+            </div>
+            <button class="drag-handle" type="button" aria-label="Drag token context panel"></button>
+          </div>
+          <div id="insights" class="insights"></div>
+        </section>
+
+        <section class="chart-section draggable-panel widget widget-resizable" data-panel-id="usage-chart" data-widget-id="daily-chart" data-widget-label="Daily Cost Chart" draggable="true" aria-label="Usage chart">
+          <div class="panel-bar">
+            <div>
+              <h2 id="chartTitle">Daily Cost</h2>
+              <p id="chartSubtitle">-</p>
+            </div>
+            <div class="panel-actions">
+              <strong id="chartTotal">-</strong>
+              <button class="drag-handle" type="button" aria-label="Drag usage chart panel"></button>
+            </div>
+          </div>
+          <div class="toolbar" aria-label="Chart controls">
+            <div class="tabs" role="tablist" aria-label="Report view">
+              <button class="tab active" data-view="daily" type="button">Daily</button>
+              <button class="tab" data-view="weekly" type="button">Weekly</button>
+              <button class="tab" data-view="monthly" type="button">Monthly</button>
+              <button class="tab" data-view="sessions" type="button">Sessions</button>
+            </div>
+            <div class="control-row">
+              <label>
+                Metric
+                <select id="metricSelect">
+                  <option value="costUSD">Cost</option>
+                  <option value="totalTokens">Total tokens</option>
+                  <option value="inputTokens">Input tokens</option>
+                  <option value="cachedInputTokens">Cached input</option>
+                  <option value="outputTokens">Output tokens</option>
+                  <option value="reasoningOutputTokens">Thinking tokens</option>
+                </select>
+              </label>
+              <label>
+                Range
+                <select id="rangeSelect">
+                  <option value="30">Last 30 rows</option>
+                  <option value="14">Last 14 rows</option>
+                  <option value="7">Last 7 rows</option>
+                  <option value="all">All rows</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div id="chart" class="chart" role="img" aria-label="Usage bar chart"></div>
+        </section>
+
+        <section id="analyticsGrid" class="analytics-grid draggable-panel widget" data-panel-id="analytics" data-widget-id="usage-analytics" data-widget-label="Usage Analytics" draggable="true" aria-label="Analytics breakdowns">
+          <div class="panel-bar analytics-heading">
+            <div>
+              <h2>Usage Analytics</h2>
+              <p>Breakdowns inspired by model, billing, and activity views</p>
+            </div>
+            <button class="drag-handle" type="button" aria-label="Drag analytics panel"></button>
+          </div>
+          <article class="panel analytics-card analytics-model widget widget-resizable" data-widget-id="chat-model-usage" data-widget-label="Chat Model Usage">
+            <h2>Chat Model Usage</h2>
+            <div id="modelPie" class="pie-chart"></div>
+          </article>
+          <article class="panel analytics-card analytics-billing widget widget-resizable" data-widget-id="usage-billing" data-widget-label="Usage & Billing">
+            <h2>Usage & Billing</h2>
+            <div id="billingChart" class="mini-chart"></div>
+          </article>
+          <article class="panel analytics-card analytics-composition widget widget-resizable" data-widget-id="token-composition" data-widget-label="Token Composition">
+            <h2>Token Composition</h2>
+            <div id="compositionChart" class="area-chart"></div>
+          </article>
+          <article class="panel analytics-card analytics-activity widget widget-resizable" data-widget-id="token-activity" data-widget-label="Token Activity">
+            <div class="panel-mini-header">
+              <h2>Token Activity</h2>
+              <div class="segmented tiny" role="group" aria-label="Activity metric">
+                <button class="segment active" data-activity-metric="totalTokens" type="button">All</button>
+                <button class="segment" data-activity-metric="inputTokens" type="button">Input</button>
+                <button class="segment" data-activity-metric="outputTokens" type="button">Output</button>
+                <button class="segment" data-activity-metric="cachedInputTokens" type="button">Cached</button>
+                <button class="segment" data-activity-metric="reasoningOutputTokens" type="button">Thinking</button>
+              </div>
+            </div>
+            <div id="activityHeatmap" class="activity-heatmap"></div>
+          </article>
+        </section>
+
+        <section id="sessionsSplit" class="split draggable-panel widget" data-panel-id="sessions" data-widget-id="sessions-panel" data-widget-label="Sessions Panel" draggable="true">
+          <article class="panel widget widget-resizable" data-widget-id="model-mix" data-widget-label="Model Mix">
+            <div class="panel-mini-header">
+              <h2>Model Mix</h2>
+              <button class="drag-handle" type="button" aria-label="Drag model mix panel"></button>
+            </div>
+            <div id="modelMix" class="model-mix"></div>
+          </article>
+          <article class="panel widget widget-resizable" data-widget-id="top-sessions" data-widget-label="Top Sessions">
+            <h2>Top Sessions</h2>
+            <div id="topSessions" class="session-list"></div>
+          </article>
+        </section>
+
+        <section class="table-section draggable-panel widget widget-resizable" data-panel-id="table" data-widget-id="daily-rows-table" data-widget-label="Daily Rows Table" draggable="true">
+          <div class="table-heading">
+            <h2 id="tableTitle">Daily Rows</h2>
+            <div class="panel-actions">
+              <span id="tableCount">0 rows</span>
+              <button class="drag-handle" type="button" aria-label="Drag table panel"></button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead id="tableHead"></thead>
+              <tbody id="tableBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <div id="dashboardTooltip" class="dashboard-tooltip" role="tooltip"></div>
+
+      <aside id="widgetSidebar" class="widget-sidebar" aria-hidden="true">
+        <div class="widget-sidebar-header">
+          <h2>Widgets</h2>
+          <div class="widget-sidebar-actions">
+            <button id="resetWidgetsButton" class="secondary" type="button">Reset</button>
+            <button id="closeWidgetsButton" class="secondary" type="button">Close</button>
+          </div>
+        </div>
+        <p>Show, hide, and resize dashboard widgets.</p>
+        <div id="widgetList" class="widget-list"></div>
+      </aside>
+      <div id="widgetBackdrop" class="widget-backdrop" hidden></div>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

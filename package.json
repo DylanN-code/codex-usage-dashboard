@@ -1,0 +1,29 @@
+{
+  "name": "set-up-dashboard-locally-to-track",
+  "version": "1.0.0",
+  "description": "Local browser dashboard for Codex usage powered by ccusage.",
+  "main": "server.js",
+  "scripts": {
+    "dashboard": "node server.js",
+    "start": "node server.js",
+    "start:prod": "NODE_ENV=production node server.js",
+    "usage:daily": "ccusage codex daily",
+    "usage:monthly": "ccusage codex monthly",
+    "usage:sessions": "ccusage codex session"
+  },
+  "keywords": [
+    "codex",
+    "ccusage",
+    "dashboard"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@ccusage/codex": "^19.0.0",
+    "ccusage": "^20.0.6",
+    "compression": "^1.8.1",
+    "express": "^5.2.1",
+    "helmet": "^8.2.0"
+  }
+}

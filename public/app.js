@@ -16,6 +16,9 @@ const billingKeys = ["cachedInputTokens", "inputTokens", "outputTokens", "reason
 
 const state = {
   data: null,
+  sourceMode: query.get("source") === "local" ? "local" : "api",
+  localCodexHandle: null,
+  localSourceLabel: "",
   view: validViews.has(query.get("view")) ? query.get("view") : "daily",
   metric: validMetrics.has(query.get("metric")) ? query.get("metric") : "costUSD",
   range: validRanges.has(query.get("range")) ? query.get("range") : "30",
@@ -75,6 +78,7 @@ const metricColors = {
 const els = {
   status: document.querySelector("#status"),
   refreshButton: document.querySelector("#refreshButton"),
+  loadLocalButton: document.querySelector("#loadLocalButton"),
   widgetsButton: document.querySelector("#widgetsButton"),
   dashboardPanels: document.querySelector("#dashboardPanels"),
   dashboardTooltip: document.querySelector("#dashboardTooltip"),
@@ -282,6 +286,7 @@ function aggregateRows(rows) {
 
 function setLoading(isLoading) {
   els.refreshButton.disabled = isLoading;
+  if (els.loadLocalButton) els.loadLocalButton.disabled = isLoading;
   els.refreshButton.textContent = isLoading ? "Refreshing" : "Refresh";
 }
 
@@ -292,6 +297,7 @@ function syncUrl() {
   params.set("range", state.range);
   params.set("speed", state.speed);
   params.set("theme", state.theme);
+  params.set("source", state.sourceMode);
   params.set("activityMetric", state.activityMetric);
   const activeComposition = compositionKeys.filter((key) => state.compositionVisible[key]);
   if (activeComposition.length !== compositionKeys.length) {
@@ -316,8 +322,366 @@ function syncUrl() {
 }
 
 function renderDataSource(payload) {
+  if (payload.localParse) {
+    const source = payload.localSourceLabel || ".codex";
+    els.dataSource.textContent = `Data source: ${source} loaded directly in browser from local Codex JSONL files.`;
+    return;
+  }
   const sources = (payload.codexHomes || []).map((item) => item.home).join(", ");
   els.dataSource.textContent = `Data source: ${sources || "unknown"} via ccusage codex daily, monthly, and session reports.`;
+}
+
+function startOfIsoWeek(date) {
+  const copy = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = copy.getUTCDay() || 7;
+  copy.setUTCDate(copy.getUTCDate() - day + 1);
+  return copy;
+}
+
+function weeklyFromDailyRows(dailyRows) {
+  const weeks = new Map();
+  for (const row of dailyRows) {
+    const date = new Date(`${row.date}T00:00:00Z`);
+    const weekStart = startOfIsoWeek(date);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
+    const week = isoDate(weekStart);
+    if (!weeks.has(week)) {
+      weeks.set(week, {
+        week,
+        weekStart: isoDate(weekStart),
+        weekEnd: isoDate(weekEnd),
+        cachedInputTokens: 0,
+        costUSD: 0,
+        inputTokens: 0,
+        models: {},
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0,
+      });
+    }
+    const target = weeks.get(week);
+    addUsage(target, row);
+    for (const [model, details] of Object.entries(row.models || {})) {
+      target.models[model] ||= {
+        cachedInputTokens: 0,
+        inputTokens: 0,
+        isFallback: false,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0,
+      };
+      addUsage(target.models[model], details);
+    }
+  }
+  return [...weeks.values()].sort((a, b) => a.week.localeCompare(b.week));
+}
+
+async function ensureReadPermission(handle) {
+  if (typeof handle.queryPermission !== "function") return true;
+  const options = { mode: "read" };
+  if ((await handle.queryPermission(options)) === "granted") return true;
+  return (await handle.requestPermission(options)) === "granted";
+}
+
+async function getCodexRootHandleFromPicker() {
+  if (typeof window.showDirectoryPicker !== "function") {
+    throw new Error("Your browser does not support local directory picker. Use a Chromium-based browser.");
+  }
+  const picked = await window.showDirectoryPicker({ mode: "read" });
+  if (!(await ensureReadPermission(picked))) {
+    throw new Error("Local directory read permission was not granted.");
+  }
+  if (picked.name === ".codex") {
+    return { codexHandle: picked, label: ".codex" };
+  }
+  try {
+    const codexHandle = await picked.getDirectoryHandle(".codex", { create: false });
+    if (!(await ensureReadPermission(codexHandle))) {
+      throw new Error("Local .codex folder read permission was not granted.");
+    }
+    return { codexHandle, label: `${picked.name}/.codex` };
+  } catch {
+    throw new Error("Selected folder does not contain a .codex directory.");
+  }
+}
+
+async function collectJsonlFiles(dirHandle, prefix = "") {
+  const files = [];
+  for await (const handle of dirHandle.values()) {
+    if (handle.kind === "directory") {
+      const nested = await collectJsonlFiles(handle, `${prefix}${handle.name}/`);
+      files.push(...nested);
+      continue;
+    }
+    if (handle.kind === "file" && handle.name.endsWith(".jsonl")) {
+      files.push({ handle, relativePath: `${prefix}${handle.name}` });
+    }
+  }
+  return files;
+}
+
+function usageFromTokenCount(lastTokenUsage = {}) {
+  const output = number(lastTokenUsage.output_tokens);
+  const reasoning = number(lastTokenUsage.reasoning_output_tokens);
+  return {
+    cachedInputTokens: number(lastTokenUsage.cached_input_tokens),
+    costUSD: 0,
+    inputTokens: number(lastTokenUsage.input_tokens),
+    outputTokens: Math.max(output - reasoning, 0),
+    reasoningOutputTokens: reasoning,
+    totalTokens: number(lastTokenUsage.total_tokens),
+  };
+}
+
+async function parseSessionJsonlFile(fileHandle, relativePath, scopeName) {
+  const file = await fileHandle.getFile();
+  const text = await file.text();
+  const lines = text.split(/\n+/);
+  const turns = [];
+
+  let currentModel = "unknown";
+  let latestTokenUsage = null;
+  let sessionId = file.name.replace(/\.jsonl$/i, "");
+  let cwd = "";
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (row.type === "session_meta") {
+      sessionId = row.payload?.id || sessionId;
+      cwd = row.payload?.cwd || cwd;
+      continue;
+    }
+
+    if (row.type === "turn_context" && row.payload?.model) {
+      currentModel = row.payload.model;
+      continue;
+    }
+
+    if (row.type === "event_msg" && row.payload?.type === "token_count") {
+      const usage = row.payload?.info?.last_token_usage;
+      if (usage && typeof usage === "object") {
+        latestTokenUsage = usage;
+      }
+      continue;
+    }
+
+    if (row.type === "event_msg" && row.payload?.type === "task_complete" && latestTokenUsage) {
+      const completedAt = number(row.payload?.completed_at);
+      const eventDate = completedAt
+        ? new Date(completedAt * 1000)
+        : new Date(row.timestamp || file.lastModified);
+      const usage = usageFromTokenCount(latestTokenUsage);
+      turns.push({
+        ...usage,
+        date: isoDate(eventDate),
+        directory: cwd || `${scopeName}/unknown`,
+        lastActivity: eventDate.toISOString(),
+        model: currentModel || "unknown",
+        sessionFile: relativePath,
+        sessionId,
+      });
+      latestTokenUsage = null;
+    }
+  }
+
+  return turns;
+}
+
+function aggregateLocalTurns(turns, localSourceLabel) {
+  const daily = new Map();
+  const monthly = new Map();
+  const sessions = new Map();
+  const totals = {
+    cachedInputTokens: 0,
+    costUSD: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  };
+
+  for (const turn of turns) {
+    addUsage(totals, turn);
+
+    if (!daily.has(turn.date)) {
+      daily.set(turn.date, {
+        date: turn.date,
+        cachedInputTokens: 0,
+        costUSD: 0,
+        inputTokens: 0,
+        models: {},
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0,
+      });
+    }
+    const day = daily.get(turn.date);
+    addUsage(day, turn);
+    day.models[turn.model] ||= {
+      cachedInputTokens: 0,
+      inputTokens: 0,
+      isFallback: false,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+    };
+    addUsage(day.models[turn.model], turn);
+
+    const monthKey = turn.date.slice(0, 7);
+    if (!monthly.has(monthKey)) {
+      monthly.set(monthKey, {
+        month: monthKey,
+        cachedInputTokens: 0,
+        costUSD: 0,
+        inputTokens: 0,
+        models: {},
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0,
+      });
+    }
+    const month = monthly.get(monthKey);
+    addUsage(month, turn);
+    month.models[turn.model] ||= {
+      cachedInputTokens: 0,
+      inputTokens: 0,
+      isFallback: false,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+    };
+    addUsage(month.models[turn.model], turn);
+
+    const sessionKey = turn.sessionFile || turn.sessionId;
+    if (!sessions.has(sessionKey)) {
+      sessions.set(sessionKey, {
+        sessionId: turn.sessionId,
+        sessionFile: turn.sessionFile,
+        directory: turn.directory,
+        lastActivity: turn.lastActivity,
+        cachedInputTokens: 0,
+        costUSD: 0,
+        inputTokens: 0,
+        models: {},
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0,
+      });
+    }
+    const session = sessions.get(sessionKey);
+    addUsage(session, turn);
+    if (turn.lastActivity > session.lastActivity) {
+      session.lastActivity = turn.lastActivity;
+    }
+    session.models[turn.model] ||= {
+      cachedInputTokens: 0,
+      inputTokens: 0,
+      isFallback: false,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+    };
+    addUsage(session.models[turn.model], turn);
+  }
+
+  const dailyRows = [...daily.values()].sort((a, b) => a.date.localeCompare(b.date));
+  const monthlyRows = [...monthly.values()].sort((a, b) => a.month.localeCompare(b.month));
+  const sessionRows = [...sessions.values()].sort((a, b) => new Date(a.lastActivity) - new Date(b.lastActivity));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    localParse: true,
+    localSourceLabel,
+    speed: "local",
+    codexHomes: [
+      {
+        home: localSourceLabel,
+        exists: true,
+        sessionsExists: true,
+        archivedSessionsExists: true,
+      },
+    ],
+    daily: dailyRows,
+    weekly: weeklyFromDailyRows(dailyRows),
+    monthly: monthlyRows,
+    sessions: sessionRows,
+    totals,
+  };
+}
+
+async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
+  setLoading(true);
+  els.status.classList.remove("error");
+  els.status.textContent = "Reading local .codex files...";
+
+  try {
+    const fileEntries = [];
+    for (const bucket of ["sessions", "archived_sessions"]) {
+      try {
+        const dir = await codexHandle.getDirectoryHandle(bucket, { create: false });
+        if (!(await ensureReadPermission(dir))) continue;
+        const found = await collectJsonlFiles(dir, `${bucket}/`);
+        fileEntries.push(...found.map((entry) => ({ ...entry, scopeName: bucket })));
+      } catch {
+        continue;
+      }
+    }
+
+    if (!fileEntries.length) {
+      throw new Error("No .jsonl session files found under .codex/sessions or .codex/archived_sessions.");
+    }
+
+    const turns = [];
+    for (let index = 0; index < fileEntries.length; index += 1) {
+      if (index % 40 === 0) {
+        els.status.textContent = `Reading local .codex files... ${index}/${fileEntries.length}`;
+      }
+      const entry = fileEntries[index];
+      const parsed = await parseSessionJsonlFile(entry.handle, entry.relativePath, entry.scopeName);
+      turns.push(...parsed);
+    }
+
+    if (!turns.length) {
+      throw new Error("No usable token usage records were found in selected .codex files.");
+    }
+
+    state.localCodexHandle = codexHandle;
+    state.localSourceLabel = localSourceLabel;
+    state.sourceMode = "local";
+    state.data = aggregateLocalTurns(turns, localSourceLabel);
+    if (state.metric === "costUSD") {
+      state.metric = "totalTokens";
+    }
+    initializeModelVisibility();
+    populateModelFilter();
+    syncControls();
+    renderDataSource(state.data);
+    els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex`;
+    render();
+  } catch (error) {
+    els.status.classList.add("error");
+    els.status.textContent = error.message;
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function loadUsageFromLocalPicker() {
+  try {
+    const { codexHandle, label } = await getCodexRootHandleFromPicker();
+    await loadUsageFromLocalHandle(codexHandle, label);
+  } catch (error) {
+    els.status.classList.add("error");
+    els.status.textContent = error.message;
+  }
 }
 
 function allWidgets() {
@@ -478,6 +842,7 @@ async function loadUsage() {
     }
 
     state.data = payload;
+    state.sourceMode = "api";
     initializeModelVisibility();
     populateModelFilter();
     syncControls();
@@ -486,7 +851,10 @@ async function loadUsage() {
     render();
   } catch (error) {
     els.status.classList.add("error");
-    els.status.textContent = error.message;
+    const hint = typeof window.showDirectoryPicker === "function"
+      ? ` API unavailable. Click "Load .codex" to read local data in browser.`
+      : "";
+    els.status.textContent = `${error.message}${hint}`;
   } finally {
     setLoading(false);
   }
@@ -1088,6 +1456,11 @@ function applyTheme() {
 function setupControls() {
   syncControls();
 
+  if (els.loadLocalButton && typeof window.showDirectoryPicker !== "function") {
+    els.loadLocalButton.disabled = true;
+    els.loadLocalButton.title = "Directory picker requires a Chromium-based browser.";
+  }
+
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
       state.view = button.dataset.view;
@@ -1232,7 +1605,14 @@ function setupControls() {
     }
   });
 
-  els.refreshButton.addEventListener("click", loadUsage);
+  els.loadLocalButton?.addEventListener("click", loadUsageFromLocalPicker);
+  els.refreshButton.addEventListener("click", async () => {
+    if (state.sourceMode === "local" && state.localCodexHandle) {
+      await loadUsageFromLocalHandle(state.localCodexHandle, state.localSourceLabel || ".codex");
+      return;
+    }
+    await loadUsage();
+  });
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 }
 

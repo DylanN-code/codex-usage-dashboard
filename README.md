@@ -16,7 +16,9 @@ http://127.0.0.1:3210
 
 ## Data
 
-The dashboard reads local Codex JSONL logs through:
+The dashboard supports two data modes:
+
+1. API mode (local server):
 
 ```sh
 ccusage codex daily --json
@@ -25,6 +27,12 @@ ccusage codex session --json
 ```
 
 `ccusage` uses `CODEX_HOME` when set, otherwise it reads from `~/.codex`.
+
+2. Browser local mode (Netlify/static-friendly):
+- Click `Load .codex` in the UI.
+- Pick either your `.codex` folder directly, or a base folder that contains `.codex`.
+- The app reads `sessions/**/*.jsonl` and `archived_sessions/**/*.jsonl` directly in browser memory.
+- No session JSONL data is uploaded to the deployed server.
 
 ## Features
 
@@ -44,7 +52,9 @@ http://127.0.0.1:3210/?view=weekly&metric=totalTokens&range=all&theme=dark&model
 
 ## Publish
 
-This app reads local Codex logs from `CODEX_HOME`, so a hosted deployment must run somewhere that has access to those logs. For a private server:
+For hosted static deployments (like Netlify), use `Load .codex` browser local mode.
+
+For server-hosted mode that uses `CODEX_HOME`, run a private server with filesystem access:
 
 ```sh
 docker build -t codex-usage-dashboard .

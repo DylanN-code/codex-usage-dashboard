@@ -13,7 +13,6 @@ const validSpeeds = new Set(["auto", "standard", "fast"]);
 const validThemes = new Set(["dark", "light", "system"]);
 const compositionKeys = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"];
 const billingKeys = ["cachedInputTokens", "inputTokens", "outputTokens", "reasoningOutputTokens"];
-const LOCAL_ACCESS_PROMPT_KEY = "codex-usage-local-access-choice";
 const MODEL_PRICING_USD_PER_1M = [
   { pattern: /^gpt-5\.5($|[-:])/i, input: 5.0, cachedInput: 0.5, output: 30.0 },
   { pattern: /^gpt-5\.4($|[-:])/i, input: 2.5, cachedInput: 0.25, output: 15.0 },
@@ -751,13 +750,11 @@ function renderInitialLocalAccessPrompt() {
     const skipButton = els.status.querySelector('[data-local-consent="skip"]');
 
     allowButton?.addEventListener("click", async () => {
-      localStorage.setItem(LOCAL_ACCESS_PROMPT_KEY, "granted");
       await loadUsage();
       resolve();
     }, { once: true });
 
     skipButton?.addEventListener("click", () => {
-      localStorage.setItem(LOCAL_ACCESS_PROMPT_KEY, "declined");
       els.status.classList.remove("error");
       els.status.textContent = "Local access skipped. Use Select .codex Path to load local usage data.";
       resolve();
@@ -766,11 +763,9 @@ function renderInitialLocalAccessPrompt() {
 }
 
 async function loadInitialData() {
-  const savedChoice = localStorage.getItem(LOCAL_ACCESS_PROMPT_KEY);
-
-  if (!savedChoice && typeof window.showDirectoryPicker === "function") {
+  if (typeof window.showDirectoryPicker === "function") {
     await renderInitialLocalAccessPrompt();
-    if (state.data) return;
+    return;
   }
 
   await loadUsage();
@@ -1574,10 +1569,23 @@ function setupControls() {
   });
 
   document.querySelectorAll("[data-speed]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       state.speed = button.dataset.speed;
       syncControls();
-      loadUsage();
+
+      if (state.sourceMode === "local" && state.localCodexHandle) {
+        await loadUsageFromLocalHandle(state.localCodexHandle, state.localSourceLabel || "{basePath}/.codex");
+        return;
+      }
+
+      if (state.sourceMode === "api" && state.data) {
+        await loadUsage();
+        return;
+      }
+
+      els.status.classList.remove("error");
+      els.status.textContent = "Speed updated. Load .codex data to refresh usage.";
+      syncUrl();
     });
   });
 

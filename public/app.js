@@ -21,6 +21,7 @@ const MODEL_PRICING_USD_PER_1M = [
   { pattern: /^chat-latest($|[-:])/i, input: 5.0, cachedInput: 0.5, output: 30.0 },
 ];
 const DEFAULT_MODEL_PRICING_USD_PER_1M = { input: 1.25, cachedInput: 0.125, output: 10.0 };
+const COST_UPLOAD_CHUNK_BYTES = 5 * 1024 * 1024;
 
 const state = {
   data: null,
@@ -563,6 +564,22 @@ async function postJson(endpoint, body) {
 }
 
 async function uploadCostFile(uploadId, relativePath, file) {
+  if (file.size > COST_UPLOAD_CHUNK_BYTES) {
+    const totalChunks = Math.ceil(file.size / COST_UPLOAD_CHUNK_BYTES);
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+      const start = chunkIndex * COST_UPLOAD_CHUNK_BYTES;
+      const end = Math.min(file.size, start + COST_UPLOAD_CHUNK_BYTES);
+      await postJson("/api/cost-upload/chunk", {
+        uploadId,
+        relativePath,
+        chunkIndex,
+        totalChunks,
+        content: await file.slice(start, end).text(),
+      });
+    }
+    return;
+  }
+
   await postJson("/api/cost-upload/file", {
     uploadId,
     file: {

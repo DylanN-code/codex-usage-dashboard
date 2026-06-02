@@ -110,6 +110,7 @@ Supported keys include:
 - `POST /api/cost`: compact legacy endpoint that validates frontend-selected `.codex` JSONL files, runs backend `ccusage`, and returns speed-aware daily/weekly/monthly/session usage with calculated cost
 - `POST /api/cost-upload/start`: starts a file-by-file cost upload session for larger `.codex` histories
 - `POST /api/cost-upload/file`: uploads one validated `sessions/` or `archived_sessions/` JSONL file, or optional `config.toml`
+- `POST /api/cost-upload/chunk`: uploads one chunk of an oversized JSONL file, then validates the assembled file
 - `POST /api/cost-upload/finish`: runs backend `ccusage` against the uploaded temporary `.codex` tree, returns calculated usage, then removes the temporary files
 
 `POST /api/cost` expects:
@@ -141,8 +142,9 @@ See [.env.example](./.env.example):
 - `CCUSAGE_CORS_ORIGIN` (default `*`, for hosted frontend/backend deployments)
 - `COST_PAYLOAD_LIMIT` (default `70mb`)
 - `COST_PAYLOAD_MAX_FILES` (default `5000`)
-- `COST_PAYLOAD_MAX_BYTES` (default `262144000`)
-- `COST_PAYLOAD_MAX_FILE_BYTES` (default `20971520`)
+- `COST_PAYLOAD_MAX_BYTES` (default `524288000`)
+- `COST_PAYLOAD_MAX_FILE_BYTES` (default `104857600`)
+- `COST_PAYLOAD_MAX_CHUNK_BYTES` (default `10485760`)
 - `COST_UPLOAD_TTL_MS` (default `1800000`)
 
 ## Docker

@@ -16,8 +16,9 @@ const defaultCodexHome = path.join(os.homedir(), ".codex");
 const corsOrigin = process.env.CCUSAGE_CORS_ORIGIN || "*";
 const costUploadRoot = path.join(os.tmpdir(), "codex-usage-cost-uploads");
 const maxCostFiles = Number(process.env.COST_PAYLOAD_MAX_FILES || 5000);
-const maxCostBytes = Number(process.env.COST_PAYLOAD_MAX_BYTES || 250 * 1024 * 1024);
-const maxCostFileBytes = Number(process.env.COST_PAYLOAD_MAX_FILE_BYTES || 20 * 1024 * 1024);
+const maxCostBytes = Number(process.env.COST_PAYLOAD_MAX_BYTES || 500 * 1024 * 1024);
+const maxCostFileBytes = Number(process.env.COST_PAYLOAD_MAX_FILE_BYTES || 100 * 1024 * 1024);
+const maxCostChunkBytes = Number(process.env.COST_PAYLOAD_MAX_CHUNK_BYTES || 10 * 1024 * 1024);
 const costUploadTtlMs = Number(process.env.COST_UPLOAD_TTL_MS || 30 * 60 * 1000);
 
 function codexHomes() {
@@ -218,13 +219,8 @@ function validateCostMetadata(body = {}) {
   return { speed, sourceLabel };
 }
 
-function validateCostFile(file, index = 0) {
-  if (!file || typeof file !== "object" || Array.isArray(file)) {
-    throw badRequest(`files[${index}] must be an object.`);
-  }
-
-  const relativePath = String(file.relativePath || "").replaceAll("\\", "/");
-  const content = file.content;
+function validateCostRelativePath(value, index = 0) {
+  const relativePath = String(value || "").replaceAll("\\", "/");
   if (!relativePath || path.isAbsolute(relativePath) || relativePath.includes("..")) {
     throw badRequest(`files[${index}].relativePath is invalid.`);
   }
@@ -237,6 +233,28 @@ function validateCostFile(file, index = 0) {
   if (!/^[A-Za-z0-9._/@-]+$/.test(relativePath)) {
     throw badRequest(`files[${index}].relativePath contains unsupported characters.`);
   }
+
+  return { relativePath, isConfig, isSessionJsonl };
+}
+
+function validateJsonlContent(content, relativePath) {
+  for (const [lineIndex, line] of content.split(/\n/).entries()) {
+    if (!line.trim()) continue;
+    try {
+      JSON.parse(line);
+    } catch {
+      throw badRequest(`${relativePath} contains invalid JSON on line ${lineIndex + 1}.`);
+    }
+  }
+}
+
+function validateCostFile(file, index = 0) {
+  if (!file || typeof file !== "object" || Array.isArray(file)) {
+    throw badRequest(`files[${index}] must be an object.`);
+  }
+
+  const { relativePath, isSessionJsonl } = validateCostRelativePath(file.relativePath, index);
+  const content = file.content;
   if (typeof content !== "string") {
     throw badRequest(`files[${index}].content must be a string.`);
   }
@@ -247,17 +265,17 @@ function validateCostFile(file, index = 0) {
   }
 
   if (isSessionJsonl) {
-    for (const [lineIndex, line] of content.split(/\n/).entries()) {
-      if (!line.trim()) continue;
-      try {
-        JSON.parse(line);
-      } catch {
-        throw badRequest(`${relativePath} contains invalid JSON on line ${lineIndex + 1}.`);
-      }
-    }
+    validateJsonlContent(content, relativePath);
   }
 
   return { relativePath, content, bytes, isSessionJsonl };
+}
+
+async function validateUploadedFile(relativePath, isSessionJsonl, filePath) {
+  const content = await fs.promises.readFile(filePath, "utf8");
+  if (isSessionJsonl) {
+    validateJsonlContent(content, relativePath);
+  }
 }
 
 function validateCostPayload(body) {
@@ -385,6 +403,26 @@ async function writeUploadedCostFile(uploadId, file) {
   await fs.promises.writeFile(destination, file.content, "utf8");
 }
 
+function pendingUploadBytes(meta) {
+  return Object.values(meta.pendingFiles || {}).reduce((sum, file) => sum + Number(file.bytes || 0), 0);
+}
+
+function uploadedCostFilePath(uploadId, relativePath) {
+  const root = path.join(uploadDir(uploadId), ".codex");
+  const destination = path.join(root, relativePath);
+  if (!destination.startsWith(root + path.sep)) {
+    throw badRequest(`Unsafe file path: ${relativePath}`);
+  }
+  return destination;
+}
+
+async function appendUploadedCostFileChunk(uploadId, chunk) {
+  const destination = uploadedCostFilePath(uploadId, chunk.relativePath);
+  await fs.promises.mkdir(path.dirname(destination), { recursive: true });
+  await fs.promises.appendFile(`${destination}.uploading`, chunk.content, "utf8");
+  return destination;
+}
+
 app.get("/api/health", (req, res) => {
   const validation = codexHomeValidation();
   res.json({
@@ -446,6 +484,7 @@ app.post("/api/cost-upload/start", async (req, res) => {
       sourceLabel,
       uploadedBytes: 0,
       uploadedFiles: 0,
+      pendingFiles: {},
       paths: [],
     };
     await writeUploadMeta(meta);
@@ -468,15 +507,19 @@ app.post("/api/cost-upload/file", async (req, res) => {
   try {
     const uploadId = validateUploadId(req.body?.uploadId);
     const meta = await readUploadMeta(uploadId);
+    meta.pendingFiles ||= {};
     const file = validateCostFile(req.body?.file, meta.uploadedFiles);
 
     if (meta.paths.includes(file.relativePath)) {
       throw badRequest(`Duplicate file path: ${file.relativePath}`);
     }
+    if (meta.pendingFiles[file.relativePath]) {
+      throw badRequest(`File is already being uploaded in chunks: ${file.relativePath}`);
+    }
     if (meta.uploadedFiles + 1 > maxCostFiles) {
       throw badRequest(`Too many files. Maximum is ${maxCostFiles}.`);
     }
-    if (meta.uploadedBytes + file.bytes > maxCostBytes) {
+    if (meta.uploadedBytes + pendingUploadBytes(meta) + file.bytes > maxCostBytes) {
       throw badRequest(`Payload is too large. Maximum total size is ${maxCostBytes} bytes.`);
     }
 
@@ -500,6 +543,102 @@ app.post("/api/cost-upload/file", async (req, res) => {
   }
 });
 
+app.post("/api/cost-upload/chunk", async (req, res) => {
+  try {
+    const uploadId = validateUploadId(req.body?.uploadId);
+    const meta = await readUploadMeta(uploadId);
+    meta.pendingFiles ||= {};
+
+    const { relativePath, isSessionJsonl } = validateCostRelativePath(req.body?.relativePath, meta.uploadedFiles);
+    const content = req.body?.content;
+    const chunkIndex = Number(req.body?.chunkIndex);
+    const totalChunks = Number(req.body?.totalChunks);
+    if (typeof content !== "string") {
+      throw badRequest("content must be a string.");
+    }
+    if (!Number.isInteger(chunkIndex) || chunkIndex < 0) {
+      throw badRequest("chunkIndex must be a non-negative integer.");
+    }
+    if (!Number.isInteger(totalChunks) || totalChunks < 1) {
+      throw badRequest("totalChunks must be a positive integer.");
+    }
+    if (chunkIndex >= totalChunks) {
+      throw badRequest("chunkIndex must be less than totalChunks.");
+    }
+    if (meta.paths.includes(relativePath)) {
+      throw badRequest(`Duplicate file path: ${relativePath}`);
+    }
+    if (meta.uploadedFiles + Object.keys(meta.pendingFiles).length + 1 > maxCostFiles && !meta.pendingFiles[relativePath]) {
+      throw badRequest(`Too many files. Maximum is ${maxCostFiles}.`);
+    }
+
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > maxCostChunkBytes) {
+      throw badRequest(`Chunk is too large. Maximum chunk size is ${maxCostChunkBytes} bytes.`);
+    }
+
+    if (chunkIndex === 0) {
+      if (meta.pendingFiles[relativePath]) {
+        throw badRequest(`File is already being uploaded: ${relativePath}`);
+      }
+      const destination = uploadedCostFilePath(uploadId, relativePath);
+      await fs.promises.rm(`${destination}.uploading`, { force: true });
+      meta.pendingFiles[relativePath] = {
+        bytes: 0,
+        isSessionJsonl,
+        nextChunkIndex: 0,
+        totalChunks,
+      };
+    }
+
+    const pending = meta.pendingFiles[relativePath];
+    if (!pending) {
+      throw badRequest(`Chunk upload was not started for: ${relativePath}`);
+    }
+    if (pending.totalChunks !== totalChunks) {
+      throw badRequest(`totalChunks changed for: ${relativePath}`);
+    }
+    if (pending.nextChunkIndex !== chunkIndex) {
+      throw badRequest(`Expected chunk ${pending.nextChunkIndex} for ${relativePath}.`);
+    }
+    if (pending.bytes + bytes > maxCostFileBytes) {
+      throw badRequest(`File is too large. Maximum file size is ${maxCostFileBytes} bytes.`);
+    }
+    if (meta.uploadedBytes + pendingUploadBytes(meta) + bytes > maxCostBytes) {
+      throw badRequest(`Payload is too large. Maximum total size is ${maxCostBytes} bytes.`);
+    }
+
+    const destination = await appendUploadedCostFileChunk(uploadId, { relativePath, content });
+    pending.bytes += bytes;
+    pending.nextChunkIndex += 1;
+    meta.updatedAt = Date.now();
+
+    let completed = false;
+    if (pending.nextChunkIndex === totalChunks) {
+      await validateUploadedFile(relativePath, pending.isSessionJsonl, `${destination}.uploading`);
+      await fs.promises.rename(`${destination}.uploading`, destination);
+      meta.uploadedFiles += 1;
+      meta.uploadedBytes += pending.bytes;
+      meta.paths.push(relativePath);
+      delete meta.pendingFiles[relativePath];
+      completed = true;
+    }
+
+    await writeUploadMeta(meta);
+    res.json({
+      ok: true,
+      completed,
+      uploadedFiles: meta.uploadedFiles,
+      uploadedBytes: meta.uploadedBytes,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      error: error.statusCode ? "Invalid cost upload chunk." : "Unable to upload cost file chunk.",
+      detail: error.message,
+    });
+  }
+});
+
 app.post("/api/cost-upload/finish", async (req, res) => {
   let dir = null;
 
@@ -507,6 +646,9 @@ app.post("/api/cost-upload/finish", async (req, res) => {
     const uploadId = validateUploadId(req.body?.uploadId);
     dir = uploadDir(uploadId);
     const meta = await readUploadMeta(uploadId);
+    if (Object.keys(meta.pendingFiles || {}).length) {
+      throw badRequest("Upload session still has unfinished file chunks.");
+    }
     if (!meta.paths.some((filePath) => filePath.endsWith(".jsonl"))) {
       throw badRequest("Upload session does not contain any JSONL files.");
     }

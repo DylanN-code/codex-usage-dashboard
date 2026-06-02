@@ -69,7 +69,7 @@ The app reads local JSONL files in-browser from:
 - `.codex/sessions/**/*.jsonl`
 - `.codex/archived_sessions/**/*.jsonl`
 
-After reading those files, the frontend sends the JSONL payload plus optional `.codex/config.toml` to `POST /api/cost` so the Node backend can run real `ccusage` cost calculation with the selected speed mode. If the backend is unavailable, the dashboard falls back to browser-side parsing and estimated cost.
+After reading those files, the frontend sends the JSONL payload plus optional `.codex/config.toml` through the `/api/cost-upload/*` endpoints so the Node backend can run real `ccusage` cost calculation with the selected speed mode. Large JSONL files are uploaded in chunks. If the backend is unavailable, the dashboard falls back to browser-side parsing and estimated cost.
 
 The backend validates file count, file size, relative paths, JSONL structure, and speed mode before calculation. Uploaded JSONL files are written only to a temporary `.codex` directory, processed by `ccusage`, and deleted after the response.
 
@@ -86,6 +86,29 @@ The backend validates file count, file size, relative paths, JSONL structure, an
 - Drag-and-drop panel ordering (drag handle only)
 - Widget sidebar: show/hide, resize, width presets, reset layout
 - Hover tooltips across charts, heatmaps, table rows, and legends
+
+## Testing And CI
+
+Run the local quality gate:
+
+```sh
+npm run check
+```
+
+That command runs:
+
+- `npm run check:syntax`: JavaScript syntax checks for `server.js`, `public/app.js`, and `public/upload-utils.js`
+- `npm test`: Node test runner coverage for backend upload APIs and frontend upload chunk utilities
+
+The GitHub Actions workflow in [.github/workflows/ci.yml](./.github/workflows/ci.yml) runs the same gate on every pull request to `main` and every push to `main`.
+
+To make tests required before merging into `main`, enable branch protection in GitHub:
+
+1. Open the repository settings.
+2. Go to **Branches**.
+3. Add or edit the protection rule for `main`.
+4. Enable **Require status checks to pass before merging**.
+5. Select the `Test` status check from the `CI` workflow.
 
 ## Useful Query Parameters
 

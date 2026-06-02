@@ -62,7 +62,7 @@ function runCcusage(report, speed, envOverrides = {}) {
   });
 }
 
-async function runUsageReports(speed, envOverrides = {}) {
+async function defaultRunUsageReports(speed, envOverrides = {}) {
   const [daily, monthly, sessions] = await Promise.all([
     runCcusage("daily", speed, envOverrides),
     runCcusage("monthly", speed, envOverrides),
@@ -76,6 +76,16 @@ async function runUsageReports(speed, envOverrides = {}) {
     sessions: sessions.sessions || [],
     totals: daily.totals || monthly.totals || sessions.totals || {},
   };
+}
+
+let usageReportsRunner = defaultRunUsageReports;
+
+function setUsageReportsRunner(runner) {
+  usageReportsRunner = runner;
+}
+
+function resetUsageReportsRunner() {
+  usageReportsRunner = defaultRunUsageReports;
 }
 
 function homeStatus(home) {
@@ -451,7 +461,7 @@ app.get("/api/usage", async (req, res) => {
   }
 
   try {
-    const reports = await runUsageReports(speed);
+    const reports = await usageReportsRunner(speed);
 
     res.json({
       generatedAt: new Date().toISOString(),
@@ -653,7 +663,7 @@ app.post("/api/cost-upload/finish", async (req, res) => {
       throw badRequest("Upload session does not contain any JSONL files.");
     }
 
-    const reports = await runUsageReports(meta.speed, {
+    const reports = await usageReportsRunner(meta.speed, {
       HOME: dir,
       USERPROFILE: dir,
     });
@@ -697,7 +707,7 @@ app.post("/api/cost", async (req, res) => {
     const temp = await writeCostPayloadToTempCodex(payload.files);
     tempHome = temp.tempHome;
 
-    const reports = await runUsageReports(payload.speed, {
+    const reports = await usageReportsRunner(payload.speed, {
       HOME: tempHome,
       USERPROFILE: tempHome,
     });
@@ -760,4 +770,17 @@ function listen(port) {
   });
 }
 
-listen(preferredPort);
+if (require.main === module) {
+  listen(preferredPort);
+}
+
+module.exports = {
+  app,
+  listen,
+  resetUsageReportsRunner,
+  setUsageReportsRunner,
+  validateCostFile,
+  validateCostPayload,
+  validateCostRelativePath,
+  weeklyFromDaily,
+};

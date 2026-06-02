@@ -7,9 +7,12 @@
     "node": ">=22 <27"
   },
   "scripts": {
+    "check": "npm run check:syntax && npm test",
+    "check:syntax": "node --check server.js && node --check public/app.js && node --check public/upload-utils.js",
     "dashboard": "node server.js",
     "start": "node server.js",
     "start:prod": "NODE_ENV=production node server.js",
+    "test": "node --test",
     "usage:daily": "ccusage codex daily",
     "usage:monthly": "ccusage codex monthly",
     "usage:sessions": "ccusage codex session"

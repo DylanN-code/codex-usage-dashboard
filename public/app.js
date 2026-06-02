@@ -28,6 +28,7 @@ const state = {
   data: null,
   sourceMode: query.get("source") === "local" ? "local" : "api",
   localCodexHandle: null,
+  localCostUploadSession: null,
   localSourceLabel: "",
   apiBase: "",
   view: validViews.has(query.get("view")) ? query.get("view") : "daily",
@@ -613,7 +614,23 @@ async function calculateCostWithBackend(fileEntries, localSourceLabel, codexHand
   }
 
   els.status.textContent = "Calculating cost with backend ccusage...";
-  return postJson("/api/cost-upload/finish", { uploadId: session.uploadId });
+  return postJson("/api/cost-upload/calculate", {
+    uploadId: session.uploadId,
+    speed: state.speed,
+  });
+}
+
+async function calculateCostForCurrentSpeed() {
+  const uploadId = state.localCostUploadSession?.uploadId;
+  if (!uploadId) {
+    throw new Error("No reusable backend upload session is available.");
+  }
+
+  els.status.textContent = `Calculating ${state.speed} cost with backend ccusage...`;
+  return postJson("/api/cost-upload/calculate", {
+    uploadId,
+    speed: state.speed,
+  });
 }
 
 function aggregateLocalTurns(turns, localSourceLabel) {
@@ -775,6 +792,43 @@ async function fetchUsageFromBase(apiBase) {
   return { payload, base };
 }
 
+function applyLocalUsageData(data, codexHandle, localSourceLabel) {
+  state.localCodexHandle = codexHandle;
+  state.localSourceLabel = localSourceLabel;
+  state.localCostUploadSession = data.uploadId
+    ? {
+        uploadId: data.uploadId,
+        uploadedBytes: data.uploadedBytes,
+        uploadedFiles: data.uploadedFiles,
+      }
+    : null;
+  state.sourceMode = "local";
+  state.data = data;
+  initializeModelVisibility();
+  populateModelFilter();
+  syncControls();
+  renderDataSource(state.data);
+  const costSource = state.data.costSource === "ccusage" ? "backend ccusage" : "browser estimate";
+  els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}`;
+  render();
+}
+
+async function reloadLocalCostForSpeed() {
+  setLoading(true);
+  els.status.classList.remove("error");
+
+  try {
+    const data = await calculateCostForCurrentSpeed();
+    applyLocalUsageData(data, state.localCodexHandle, state.localSourceLabel || "{basePath}/.codex");
+  } catch (error) {
+    state.localCostUploadSession = null;
+    els.status.classList.add("error");
+    els.status.textContent = `${error.message} Use Refresh to read and upload local .codex files again.`;
+  } finally {
+    setLoading(false);
+  }
+}
+
 async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
   setLoading(true);
   els.status.classList.remove("error");
@@ -818,19 +872,10 @@ async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
       data = aggregateLocalTurns(turns, localSourceLabel);
       data.costSource = "browser-estimate";
       data.backendCostError = backendError.message;
+      state.localCostUploadSession = null;
     }
 
-    state.localCodexHandle = codexHandle;
-    state.localSourceLabel = localSourceLabel;
-    state.sourceMode = "local";
-    state.data = data;
-    initializeModelVisibility();
-    populateModelFilter();
-    syncControls();
-    renderDataSource(state.data);
-    const costSource = state.data.costSource === "ccusage" ? "backend ccusage" : "browser estimate";
-    els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}`;
-    render();
+    applyLocalUsageData(data, codexHandle, localSourceLabel);
   } catch (error) {
     els.status.classList.add("error");
     els.status.textContent = error.message;
@@ -1696,8 +1741,15 @@ function setupControls() {
       state.speed = button.dataset.speed;
       syncControls();
 
+      if (state.sourceMode === "local" && state.localCostUploadSession?.uploadId) {
+        await reloadLocalCostForSpeed();
+        return;
+      }
+
       if (state.sourceMode === "local" && state.localCodexHandle) {
-        await loadUsageFromLocalHandle(state.localCodexHandle, state.localSourceLabel || "{basePath}/.codex");
+        els.status.classList.remove("error");
+        els.status.textContent = "Speed updated. Use Refresh to read and upload local .codex files again.";
+        render();
         return;
       }
 

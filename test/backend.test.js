@@ -190,3 +190,41 @@ test("chunked upload assembles files and calls the report runner", async () => {
   assert.equal(payload.totals.costUSD, 4.56);
 });
 
+test("uploaded sessions can be recalculated for another speed without reuploading", async () => {
+  const relativePath = "sessions/reusable.jsonl";
+  const content = "{\"type\":\"event\"}\n";
+  const { payload: session } = await postJson("/api/cost-upload/start", {
+    speed: "auto",
+    sourceLabel: "/tmp/.codex",
+  });
+  const uploaded = await postJson("/api/cost-upload/file", {
+    uploadId: session.uploadId,
+    file: { relativePath, content },
+  });
+  assert.equal(uploaded.response.status, 200);
+
+  const seenSpeeds = [];
+  setUsageReportsRunner(async (speed, envOverrides) => {
+    seenSpeeds.push(speed);
+    const uploadedPath = path.join(envOverrides.HOME, ".codex", relativePath);
+    assert.equal(fs.readFileSync(uploadedPath, "utf8"), content);
+    return mockReports(speed === "fast" ? 9 : 3);
+  });
+
+  const first = await postJson("/api/cost-upload/calculate", {
+    uploadId: session.uploadId,
+    speed: "standard",
+  });
+  const second = await postJson("/api/cost-upload/calculate", {
+    uploadId: session.uploadId,
+    speed: "fast",
+  });
+
+  assert.equal(first.response.status, 200);
+  assert.equal(second.response.status, 200);
+  assert.deepEqual(seenSpeeds, ["standard", "fast"]);
+  assert.equal(first.payload.uploadedFiles, 1);
+  assert.equal(second.payload.uploadedFiles, 1);
+  assert.equal(first.payload.totals.costUSD, 3);
+  assert.equal(second.payload.totals.costUSD, 9);
+});

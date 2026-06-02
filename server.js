@@ -433,6 +433,52 @@ async function appendUploadedCostFileChunk(uploadId, chunk) {
   return destination;
 }
 
+function validateCompletedUploadMeta(meta) {
+  if (Object.keys(meta.pendingFiles || {}).length) {
+    throw badRequest("Upload session still has unfinished file chunks.");
+  }
+  if (!meta.paths.some((filePath) => filePath.endsWith(".jsonl"))) {
+    throw badRequest("Upload session does not contain any JSONL files.");
+  }
+}
+
+async function calculateUploadedCost(uploadId, requestedSpeed) {
+  const dir = uploadDir(uploadId);
+  const meta = await readUploadMeta(uploadId);
+  validateCompletedUploadMeta(meta);
+
+  const speed = speedModes.has(String(requestedSpeed)) ? String(requestedSpeed) : meta.speed;
+  meta.speed = speed;
+  meta.updatedAt = Date.now();
+  await writeUploadMeta(meta);
+
+  const reports = await usageReportsRunner(speed, {
+    HOME: dir,
+    USERPROFILE: dir,
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    speed,
+    costSource: "ccusage",
+    localParse: true,
+    localSourceLabel: meta.sourceLabel,
+    uploadId,
+    uploadedFiles: meta.uploadedFiles,
+    uploadedBytes: meta.uploadedBytes,
+    uploadMode: "session",
+    codexHomes: [
+      {
+        home: meta.sourceLabel,
+        exists: true,
+        sessionsExists: meta.paths.some((filePath) => filePath.startsWith("sessions/")),
+        archivedSessionsExists: meta.paths.some((filePath) => filePath.startsWith("archived_sessions/")),
+      },
+    ],
+    ...reports,
+  };
+}
+
 app.get("/api/health", (req, res) => {
   const validation = codexHomeValidation();
   res.json({
@@ -655,38 +701,7 @@ app.post("/api/cost-upload/finish", async (req, res) => {
   try {
     const uploadId = validateUploadId(req.body?.uploadId);
     dir = uploadDir(uploadId);
-    const meta = await readUploadMeta(uploadId);
-    if (Object.keys(meta.pendingFiles || {}).length) {
-      throw badRequest("Upload session still has unfinished file chunks.");
-    }
-    if (!meta.paths.some((filePath) => filePath.endsWith(".jsonl"))) {
-      throw badRequest("Upload session does not contain any JSONL files.");
-    }
-
-    const reports = await usageReportsRunner(meta.speed, {
-      HOME: dir,
-      USERPROFILE: dir,
-    });
-
-    res.json({
-      generatedAt: new Date().toISOString(),
-      speed: meta.speed,
-      costSource: "ccusage",
-      localParse: true,
-      localSourceLabel: meta.sourceLabel,
-      uploadedFiles: meta.uploadedFiles,
-      uploadedBytes: meta.uploadedBytes,
-      uploadMode: "session",
-      codexHomes: [
-        {
-          home: meta.sourceLabel,
-          exists: true,
-          sessionsExists: meta.paths.some((filePath) => filePath.startsWith("sessions/")),
-          archivedSessionsExists: meta.paths.some((filePath) => filePath.startsWith("archived_sessions/")),
-        },
-      ],
-      ...reports,
-    });
+    res.json(await calculateUploadedCost(uploadId, req.body?.speed));
   } catch (error) {
     res.status(error.statusCode || 500).json({
       error: error.statusCode ? "Invalid cost upload session." : "Unable to calculate Codex usage cost.",
@@ -696,6 +711,18 @@ app.post("/api/cost-upload/finish", async (req, res) => {
     if (dir) {
       await fs.promises.rm(dir, { recursive: true, force: true });
     }
+  }
+});
+
+app.post("/api/cost-upload/calculate", async (req, res) => {
+  try {
+    const uploadId = validateUploadId(req.body?.uploadId);
+    res.json(await calculateUploadedCost(uploadId, req.body?.speed));
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      error: error.statusCode ? "Invalid cost upload session." : "Unable to calculate Codex usage cost.",
+      detail: error.message,
+    });
   }
 });
 

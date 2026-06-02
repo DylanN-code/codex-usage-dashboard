@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const zlib = require("node:zlib");
 const compression = require("compression");
 const express = require("express");
 const helmet = require("helmet");
@@ -258,13 +259,29 @@ function validateJsonlContent(content, relativePath) {
   }
 }
 
+function decodeUploadContent(content, contentEncoding = "") {
+  if (contentEncoding === "gzip-base64") {
+    try {
+      return zlib.gunzipSync(Buffer.from(String(content || ""), "base64")).toString("utf8");
+    } catch {
+      throw badRequest("content is not valid gzip-base64.");
+    }
+  }
+
+  if (contentEncoding) {
+    throw badRequest(`Unsupported contentEncoding: ${contentEncoding}`);
+  }
+
+  return content;
+}
+
 function validateCostFile(file, index = 0) {
   if (!file || typeof file !== "object" || Array.isArray(file)) {
     throw badRequest(`files[${index}] must be an object.`);
   }
 
   const { relativePath, isSessionJsonl } = validateCostRelativePath(file.relativePath, index);
-  const content = file.content;
+  const content = decodeUploadContent(file.content, file.contentEncoding);
   if (typeof content !== "string") {
     throw badRequest(`files[${index}].content must be a string.`);
   }
@@ -606,7 +623,7 @@ app.post("/api/cost-upload/chunk", async (req, res) => {
     meta.pendingFiles ||= {};
 
     const { relativePath, isSessionJsonl } = validateCostRelativePath(req.body?.relativePath, meta.uploadedFiles);
-    const content = req.body?.content;
+    const content = decodeUploadContent(req.body?.content, req.body?.contentEncoding);
     const chunkIndex = Number(req.body?.chunkIndex);
     const totalChunks = Number(req.body?.totalChunks);
     if (typeof content !== "string") {

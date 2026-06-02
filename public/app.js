@@ -570,22 +570,24 @@ async function uploadCostFile(uploadId, relativePath, file) {
     const ranges = uploadUtils.chunkRanges(file.size, COST_UPLOAD_CHUNK_BYTES);
     for (let chunkIndex = 0; chunkIndex < ranges.length; chunkIndex += 1) {
       const { start, end } = ranges[chunkIndex];
+      const encoded = await uploadUtils.encodePayloadText(await file.slice(start, end).text());
       await postJson("/api/cost-upload/chunk", {
         uploadId,
         relativePath,
         chunkIndex,
         totalChunks: ranges.length,
-        content: await file.slice(start, end).text(),
+        ...encoded,
       });
     }
     return;
   }
 
+  const encoded = await uploadUtils.encodePayloadText(await file.text());
   await postJson("/api/cost-upload/file", {
     uploadId,
     file: {
       relativePath,
-      content: await file.text(),
+      ...encoded,
     },
   });
 }
@@ -809,7 +811,10 @@ function applyLocalUsageData(data, codexHandle, localSourceLabel) {
   syncControls();
   renderDataSource(state.data);
   const costSource = state.data.costSource === "ccusage" ? "backend ccusage" : "browser estimate";
-  els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}`;
+  const scope = state.data.localFileScope && state.data.localFileScope.matchedFiles < state.data.localFileScope.totalFiles
+    ? ` (${state.data.localFileScope.matchedFiles}/${state.data.localFileScope.totalFiles} files matched date filters)`
+    : "";
+  els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}${scope}`;
   render();
 }
 
@@ -851,17 +856,37 @@ async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
       throw new Error("No .jsonl session files found under .codex/sessions or .codex/archived_sessions.");
     }
 
+    const scopedEntries = uploadUtils?.filterEntriesByDateRange
+      ? uploadUtils.filterEntriesByDateRange(fileEntries, state.filters.start, state.filters.end)
+      : fileEntries;
+    const activeDateScope = Boolean(state.filters.start || state.filters.end);
+    if (activeDateScope && !scopedEntries.length) {
+      throw new Error("No .jsonl session files match the selected date filters.");
+    }
+    if (activeDateScope && scopedEntries.length < fileEntries.length) {
+      const skipped = fileEntries.length - scopedEntries.length;
+      els.status.textContent = `Date filters matched ${scopedEntries.length}/${fileEntries.length} local .codex files, skipping ${skipped} outside the selected range.`;
+    }
+
     let data;
     try {
-      data = await calculateCostWithBackend(fileEntries, localSourceLabel, codexHandle);
+      data = await calculateCostWithBackend(scopedEntries, localSourceLabel, codexHandle);
+      data.localFileScope = activeDateScope
+        ? {
+            start: state.filters.start,
+            end: state.filters.end,
+            matchedFiles: scopedEntries.length,
+            totalFiles: fileEntries.length,
+          }
+        : null;
     } catch (backendError) {
       els.status.textContent = `Backend ccusage unavailable. Reading local .codex files in browser...`;
       const turns = [];
-      for (let index = 0; index < fileEntries.length; index += 1) {
+      for (let index = 0; index < scopedEntries.length; index += 1) {
         if (index % 40 === 0) {
-          els.status.textContent = `Reading local .codex files... ${index}/${fileEntries.length}`;
+          els.status.textContent = `Reading local .codex files... ${index}/${scopedEntries.length}`;
         }
-        const entry = fileEntries[index];
+        const entry = scopedEntries[index];
         const parsed = await parseSessionJsonlFile(entry.handle, entry.relativePath, entry.scopeName);
         turns.push(...parsed);
       }
@@ -872,6 +897,14 @@ async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
       data = aggregateLocalTurns(turns, localSourceLabel);
       data.costSource = "browser-estimate";
       data.backendCostError = backendError.message;
+      data.localFileScope = activeDateScope
+        ? {
+            start: state.filters.start,
+            end: state.filters.end,
+            matchedFiles: scopedEntries.length,
+            totalFiles: fileEntries.length,
+          }
+        : null;
       state.localCostUploadSession = null;
     }
 

@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const zlib = require("node:zlib");
 const { after, afterEach, before, test } = require("node:test");
 const {
   app,
@@ -227,4 +228,57 @@ test("uploaded sessions can be recalculated for another speed without reuploadin
   assert.equal(second.payload.uploadedFiles, 1);
   assert.equal(first.payload.totals.costUSD, 3);
   assert.equal(second.payload.totals.costUSD, 9);
+});
+
+test("upload endpoint accepts gzip-base64 encoded JSONL files", async () => {
+  const relativePath = "sessions/compressed.jsonl";
+  const content = "{\"type\":\"event\"}\n";
+  const { payload: session } = await postJson("/api/cost-upload/start", {
+    speed: "standard",
+    sourceLabel: "/tmp/.codex",
+  });
+
+  const uploaded = await postJson("/api/cost-upload/file", {
+    uploadId: session.uploadId,
+    file: {
+      relativePath,
+      content: zlib.gzipSync(content).toString("base64"),
+      contentEncoding: "gzip-base64",
+    },
+  });
+  assert.equal(uploaded.response.status, 200);
+
+  setUsageReportsRunner(async (speed, envOverrides) => {
+    assert.equal(speed, "standard");
+    const uploadedPath = path.join(envOverrides.HOME, ".codex", relativePath);
+    assert.equal(fs.readFileSync(uploadedPath, "utf8"), content);
+    return mockReports(7.89);
+  });
+
+  const calculated = await postJson("/api/cost-upload/calculate", {
+    uploadId: session.uploadId,
+    speed: "standard",
+  });
+  assert.equal(calculated.response.status, 200);
+  assert.equal(calculated.payload.totals.costUSD, 7.89);
+});
+
+test("chunk endpoint accepts gzip-base64 encoded chunks", async () => {
+  const relativePath = "sessions/compressed-chunk.jsonl";
+  const content = "{\"type\":\"event\"}\n";
+  const { payload: session } = await postJson("/api/cost-upload/start", {
+    speed: "auto",
+    sourceLabel: "/tmp/.codex",
+  });
+
+  const uploaded = await postJson("/api/cost-upload/chunk", {
+    uploadId: session.uploadId,
+    relativePath,
+    chunkIndex: 0,
+    totalChunks: 1,
+    content: zlib.gzipSync(content).toString("base64"),
+    contentEncoding: "gzip-base64",
+  });
+  assert.equal(uploaded.response.status, 200);
+  assert.equal(uploaded.payload.completed, true);
 });

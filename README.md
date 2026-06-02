@@ -69,7 +69,13 @@ The app reads local JSONL files in-browser from:
 - `.codex/sessions/**/*.jsonl`
 - `.codex/archived_sessions/**/*.jsonl`
 
-After reading those files, the frontend sends the JSONL payload plus optional `.codex/config.toml` through the `/api/cost-upload/*` endpoints so the Node backend can run real `ccusage` cost calculation with the selected speed mode. Large JSONL files are uploaded in chunks. If the backend is unavailable, the dashboard falls back to browser-side parsing and estimated cost.
+After reading those files, the frontend sends the JSONL payload plus optional `.codex/config.toml` through the `/api/cost-upload/*` endpoints so the Node backend can run real `ccusage` cost calculation with the selected speed mode. Large JSONL files are uploaded in chunks. Supported browsers gzip upload payloads before sending them to the backend. If the backend is unavailable, the dashboard falls back to browser-side parsing and estimated cost.
+
+Performance notes:
+
+- Switching between Auto, Standard, and Fast reuses the existing backend upload session and recalculates cost without rereading local files.
+- Set Start/End date filters before selecting `.codex` to upload only session files whose path date matches the selected range.
+- Use Refresh when you need to reread local files after changing to a wider date range or after the backend upload session expires.
 
 The backend validates file count, file size, relative paths, JSONL structure, and speed mode before calculation. Uploaded JSONL files are written only to a temporary `.codex` directory, processed by `ccusage`, and deleted after the response.
 

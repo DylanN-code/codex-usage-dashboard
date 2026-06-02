@@ -546,53 +546,57 @@ async function parseSessionJsonlFile(fileHandle, relativePath, scopeName) {
   return turns;
 }
 
-async function readCostPayloadFiles(fileEntries) {
-  const files = [];
-  for (let index = 0; index < fileEntries.length; index += 1) {
-    if (index % 40 === 0) {
-      els.status.textContent = `Preparing local .codex files for backend cost calculation... ${index}/${fileEntries.length}`;
-    }
-    const entry = fileEntries[index];
-    const file = await entry.handle.getFile();
-    files.push({
-      relativePath: entry.relativePath,
-      content: await file.text(),
-    });
-  }
-  return files;
-}
-
-async function calculateCostWithBackend(fileEntries, localSourceLabel, codexHandle) {
-  const files = await readCostPayloadFiles(fileEntries);
-  try {
-    const configHandle = await codexHandle.getFileHandle("config.toml", { create: false });
-    const configFile = await configHandle.getFile();
-    files.push({
-      relativePath: "config.toml",
-      content: await configFile.text(),
-    });
-  } catch {
-    // config.toml is optional; ccusage can still calculate with explicit speed modes.
-  }
-  els.status.textContent = "Calculating cost with backend ccusage...";
-
-  const response = await fetch("/api/cost", {
+async function postJson(endpoint, body) {
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      speed: state.speed,
-      sourceLabel: localSourceLabel,
-      files,
-    }),
+    body: JSON.stringify(body),
   });
   const isJson = (response.headers.get("content-type") || "").includes("application/json");
   const payload = isJson ? await response.json() : null;
 
   if (!response.ok || !payload) {
-    throw new Error(payload?.detail || payload?.error || "Backend cost calculation is unavailable.");
+    throw new Error(payload?.detail || payload?.error || `Request failed (${response.status}).`);
   }
 
   return payload;
+}
+
+async function uploadCostFile(uploadId, relativePath, file) {
+  await postJson("/api/cost-upload/file", {
+    uploadId,
+    file: {
+      relativePath,
+      content: await file.text(),
+    },
+  });
+}
+
+async function calculateCostWithBackend(fileEntries, localSourceLabel, codexHandle) {
+  els.status.textContent = "Starting backend ccusage upload...";
+  const session = await postJson("/api/cost-upload/start", {
+    speed: state.speed,
+    sourceLabel: localSourceLabel,
+  });
+
+  for (let index = 0; index < fileEntries.length; index += 1) {
+    const entry = fileEntries[index];
+    els.status.textContent = `Uploading local .codex files for backend cost calculation... ${index + 1}/${fileEntries.length}`;
+    const file = await entry.handle.getFile();
+    await uploadCostFile(session.uploadId, entry.relativePath, file);
+  }
+
+  try {
+    const configHandle = await codexHandle.getFileHandle("config.toml", { create: false });
+    const configFile = await configHandle.getFile();
+    els.status.textContent = "Uploading local .codex config for backend cost calculation...";
+    await uploadCostFile(session.uploadId, "config.toml", configFile);
+  } catch {
+    // config.toml is optional; ccusage can still calculate with explicit speed modes.
+  }
+
+  els.status.textContent = "Calculating cost with backend ccusage...";
+  return postJson("/api/cost-upload/finish", { uploadId: session.uploadId });
 }
 
 function aggregateLocalTurns(turns, localSourceLabel) {

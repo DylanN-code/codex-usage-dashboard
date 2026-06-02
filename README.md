@@ -107,7 +107,10 @@ Supported keys include:
 
 - `GET /api/health`: server health + codex home path readiness
 - `GET /api/usage?speed=auto|standard|fast`: aggregated daily/weekly/monthly/session usage
-- `POST /api/cost`: validates frontend-selected `.codex` JSONL files, runs backend `ccusage`, and returns speed-aware daily/weekly/monthly/session usage with calculated cost
+- `POST /api/cost`: compact legacy endpoint that validates frontend-selected `.codex` JSONL files, runs backend `ccusage`, and returns speed-aware daily/weekly/monthly/session usage with calculated cost
+- `POST /api/cost-upload/start`: starts a file-by-file cost upload session for larger `.codex` histories
+- `POST /api/cost-upload/file`: uploads one validated `sessions/` or `archived_sessions/` JSONL file, or optional `config.toml`
+- `POST /api/cost-upload/finish`: runs backend `ccusage` against the uploaded temporary `.codex` tree, returns calculated usage, then removes the temporary files
 
 `POST /api/cost` expects:
 
@@ -132,14 +135,15 @@ Supported keys include:
 
 See [.env.example](./.env.example):
 
-- `HOST` (default `127.0.0.1`)
+- `HOST` (default `0.0.0.0`)
 - `PORT` (default `3210`)
 - `CODEX_HOME` (optional override, supports comma-separated paths)
 - `CCUSAGE_CORS_ORIGIN` (default `*`, for hosted frontend/backend deployments)
 - `COST_PAYLOAD_LIMIT` (default `70mb`)
-- `COST_PAYLOAD_MAX_FILES` (default `2500`)
-- `COST_PAYLOAD_MAX_BYTES` (default `62914560`)
-- `COST_PAYLOAD_MAX_FILE_BYTES` (default `5242880`)
+- `COST_PAYLOAD_MAX_FILES` (default `5000`)
+- `COST_PAYLOAD_MAX_BYTES` (default `262144000`)
+- `COST_PAYLOAD_MAX_FILE_BYTES` (default `20971520`)
+- `COST_UPLOAD_TTL_MS` (default `1800000`)
 
 ## Docker
 

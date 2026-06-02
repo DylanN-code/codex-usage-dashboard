@@ -7,12 +7,15 @@ const express = require("express");
 const helmet = require("helmet");
 
 const app = express();
-const host = process.env.HOST || "127.0.0.1";
+const host = process.env.HOST || "0.0.0.0";
 const preferredPort = Number(process.env.PORT || 3210);
 const publicDir = path.join(__dirname, "public");
 const speedModes = new Set(["auto", "standard", "fast"]);
 const defaultCodexHome = path.join(os.homedir(), ".codex");
 const corsOrigin = process.env.CCUSAGE_CORS_ORIGIN || "*";
+const maxCostFiles = Number(process.env.COST_PAYLOAD_MAX_FILES || 2500);
+const maxCostBytes = Number(process.env.COST_PAYLOAD_MAX_BYTES || 60 * 1024 * 1024);
+const maxCostFileBytes = Number(process.env.COST_PAYLOAD_MAX_FILE_BYTES || 5 * 1024 * 1024);
 
 function codexHomes() {
   const raw = process.env.CODEX_HOME || defaultCodexHome;
@@ -24,7 +27,7 @@ function ccusageBin() {
   return path.join(__dirname, "node_modules", ".bin", bin);
 }
 
-function runCcusage(report, speed) {
+function runCcusage(report, speed, envOverrides = {}) {
   const args = ["codex", report, "--json", "--speed", speed];
 
   return new Promise((resolve, reject) => {
@@ -33,7 +36,7 @@ function runCcusage(report, speed) {
       args,
       {
         cwd: __dirname,
-        env: process.env,
+        env: { ...process.env, ...envOverrides },
         maxBuffer: 50 * 1024 * 1024,
         timeout: 120000,
       },
@@ -53,6 +56,22 @@ function runCcusage(report, speed) {
       },
     );
   });
+}
+
+async function runUsageReports(speed, envOverrides = {}) {
+  const [daily, monthly, sessions] = await Promise.all([
+    runCcusage("daily", speed, envOverrides),
+    runCcusage("monthly", speed, envOverrides),
+    runCcusage("session", speed, envOverrides),
+  ]);
+
+  return {
+    daily: daily.daily || [],
+    weekly: weeklyFromDaily(daily.daily || []),
+    monthly: monthly.monthly || [],
+    sessions: sessions.sessions || [],
+    totals: daily.totals || monthly.totals || sessions.totals || {},
+  };
 }
 
 function homeStatus(home) {
@@ -175,8 +194,110 @@ app.use((req, res, next) => {
   }
   next();
 });
+app.use(express.json({ limit: process.env.COST_PAYLOAD_LIMIT || "70mb" }));
 app.use(compression());
 app.use(express.static(publicDir));
+
+function badRequest(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function validateCostPayload(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw badRequest("Request body must be an object.");
+  }
+
+  const speed = speedModes.has(String(body.speed)) ? String(body.speed) : "auto";
+  const sourceLabel = typeof body.sourceLabel === "string" && body.sourceLabel.trim()
+    ? body.sourceLabel.trim().slice(0, 200)
+    : "{basePath}/.codex";
+
+  if (!Array.isArray(body.files)) {
+    throw badRequest("files must be an array.");
+  }
+  if (!body.files.length) {
+    throw badRequest("files must include at least one JSONL file.");
+  }
+  if (body.files.length > maxCostFiles) {
+    throw badRequest(`Too many files. Maximum is ${maxCostFiles}.`);
+  }
+
+  let totalBytes = 0;
+  const seen = new Set();
+  const files = body.files.map((file, index) => {
+    if (!file || typeof file !== "object" || Array.isArray(file)) {
+      throw badRequest(`files[${index}] must be an object.`);
+    }
+
+    const relativePath = String(file.relativePath || "").replaceAll("\\", "/");
+    const content = file.content;
+    if (!relativePath || path.isAbsolute(relativePath) || relativePath.includes("..")) {
+      throw badRequest(`files[${index}].relativePath is invalid.`);
+    }
+    const isConfig = relativePath === "config.toml";
+    const isSessionJsonl = relativePath.endsWith(".jsonl")
+      && (relativePath.startsWith("sessions/") || relativePath.startsWith("archived_sessions/"));
+    if (!isConfig && !isSessionJsonl) {
+      throw badRequest(`files[${index}] must be config.toml or a .jsonl file under sessions/ or archived_sessions/.`);
+    }
+    if (!/^[A-Za-z0-9._/@-]+$/.test(relativePath)) {
+      throw badRequest(`files[${index}].relativePath contains unsupported characters.`);
+    }
+    if (typeof content !== "string") {
+      throw badRequest(`files[${index}].content must be a string.`);
+    }
+
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > maxCostFileBytes) {
+      throw badRequest(`files[${index}] is too large. Maximum file size is ${maxCostFileBytes} bytes.`);
+    }
+    totalBytes += bytes;
+    if (totalBytes > maxCostBytes) {
+      throw badRequest(`Payload is too large. Maximum total size is ${maxCostBytes} bytes.`);
+    }
+    if (seen.has(relativePath)) {
+      throw badRequest(`Duplicate file path: ${relativePath}`);
+    }
+    seen.add(relativePath);
+
+    if (isSessionJsonl) {
+      for (const [lineIndex, line] of content.split(/\n/).entries()) {
+        if (!line.trim()) continue;
+        try {
+          JSON.parse(line);
+        } catch {
+          throw badRequest(`${relativePath} contains invalid JSON on line ${lineIndex + 1}.`);
+        }
+      }
+    }
+
+    return { relativePath, content };
+  });
+
+  return { speed, sourceLabel, files, totalBytes };
+}
+
+async function writeCostPayloadToTempCodex(files) {
+  const tempHome = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codex-usage-"));
+  const codexHome = path.join(tempHome, ".codex");
+
+  try {
+    for (const file of files) {
+      const destination = path.join(codexHome, file.relativePath);
+      if (!destination.startsWith(codexHome + path.sep)) {
+        throw badRequest(`Unsafe file path: ${file.relativePath}`);
+      }
+      await fs.promises.mkdir(path.dirname(destination), { recursive: true });
+      await fs.promises.writeFile(destination, file.content, "utf8");
+    }
+    return { tempHome, codexHome };
+  } catch (error) {
+    await fs.promises.rm(tempHome, { recursive: true, force: true });
+    throw error;
+  }
+}
 
 app.get("/api/health", (req, res) => {
   const validation = codexHomeValidation();
@@ -206,28 +327,63 @@ app.get("/api/usage", async (req, res) => {
   }
 
   try {
-    const [daily, monthly, sessions] = await Promise.all([
-      runCcusage("daily", speed),
-      runCcusage("monthly", speed),
-      runCcusage("session", speed),
-    ]);
+    const reports = await runUsageReports(speed);
 
     res.json({
       generatedAt: new Date().toISOString(),
       speed,
       defaultCodexHome,
       codexHomes: validation.statuses,
-      daily: daily.daily || [],
-      weekly: weeklyFromDaily(daily.daily || []),
-      monthly: monthly.monthly || [],
-      sessions: sessions.sessions || [],
-      totals: daily.totals || monthly.totals || sessions.totals || {},
+      ...reports,
     });
   } catch (error) {
     res.status(500).json({
       error: "Unable to read Codex usage from ccusage.",
       detail: error.message,
     });
+  }
+});
+
+app.post("/api/cost", async (req, res) => {
+  let tempHome = null;
+
+  try {
+    const payload = validateCostPayload(req.body);
+    const temp = await writeCostPayloadToTempCodex(payload.files);
+    tempHome = temp.tempHome;
+
+    const reports = await runUsageReports(payload.speed, {
+      HOME: tempHome,
+      USERPROFILE: tempHome,
+    });
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      speed: payload.speed,
+      costSource: "ccusage",
+      localParse: true,
+      localSourceLabel: payload.sourceLabel,
+      uploadedFiles: payload.files.length,
+      uploadedBytes: payload.totalBytes,
+      codexHomes: [
+        {
+          home: payload.sourceLabel,
+          exists: true,
+          sessionsExists: payload.files.some((file) => file.relativePath.startsWith("sessions/")),
+          archivedSessionsExists: payload.files.some((file) => file.relativePath.startsWith("archived_sessions/")),
+        },
+      ],
+      ...reports,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      error: error.statusCode ? "Invalid cost calculation payload." : "Unable to calculate Codex usage cost.",
+      detail: error.message,
+    });
+  } finally {
+    if (tempHome) {
+      await fs.promises.rm(tempHome, { recursive: true, force: true });
+    }
   }
 });
 

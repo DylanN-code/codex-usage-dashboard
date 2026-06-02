@@ -57,7 +57,7 @@ Path resolution order:
 
 If the default path is missing (or lacks `sessions/` and `archived_sessions/`), the API returns an error and the UI prompts the user to select a folder manually.
 
-### 2) Browser-local mode (fallback/static-host friendly)
+### 2) Browser-local mode with backend cost calculation
 
 Click **Select .codex Path** and choose either:
 
@@ -69,7 +69,9 @@ The app reads local JSONL files in-browser from:
 - `.codex/sessions/**/*.jsonl`
 - `.codex/archived_sessions/**/*.jsonl`
 
-No local JSONL data is uploaded to the static host.
+After reading those files, the frontend sends the JSONL payload plus optional `.codex/config.toml` to `POST /api/cost` so the Node backend can run real `ccusage` cost calculation with the selected speed mode. If the backend is unavailable, the dashboard falls back to browser-side parsing and estimated cost.
+
+The backend validates file count, file size, relative paths, JSONL structure, and speed mode before calculation. Uploaded JSONL files are written only to a temporary `.codex` directory, processed by `ccusage`, and deleted after the response.
 
 ## Dashboard Features
 
@@ -105,6 +107,26 @@ Supported keys include:
 
 - `GET /api/health`: server health + codex home path readiness
 - `GET /api/usage?speed=auto|standard|fast`: aggregated daily/weekly/monthly/session usage
+- `POST /api/cost`: validates frontend-selected `.codex` JSONL files, runs backend `ccusage`, and returns speed-aware daily/weekly/monthly/session usage with calculated cost
+
+`POST /api/cost` expects:
+
+```json
+{
+  "speed": "auto",
+  "sourceLabel": "{basePath}/.codex",
+  "files": [
+    {
+      "relativePath": "sessions/2026/06/example.jsonl",
+      "content": "{\"type\":\"...\"}\n"
+    },
+    {
+      "relativePath": "config.toml",
+      "content": "service_tier = \"auto\""
+    }
+  ]
+}
+```
 
 ## Environment Variables
 
@@ -113,6 +135,11 @@ See [.env.example](./.env.example):
 - `HOST` (default `127.0.0.1`)
 - `PORT` (default `3210`)
 - `CODEX_HOME` (optional override, supports comma-separated paths)
+- `CCUSAGE_CORS_ORIGIN` (default `*`, for hosted frontend/backend deployments)
+- `COST_PAYLOAD_LIMIT` (default `70mb`)
+- `COST_PAYLOAD_MAX_FILES` (default `2500`)
+- `COST_PAYLOAD_MAX_BYTES` (default `62914560`)
+- `COST_PAYLOAD_MAX_FILE_BYTES` (default `5242880`)
 
 ## Docker
 

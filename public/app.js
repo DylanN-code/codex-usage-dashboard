@@ -360,7 +360,10 @@ function renderDataSource(payload) {
   if (payload.localParse) {
     const source = payload.localSourceLabel || "{basePath}/.codex";
     const hint = platformCodexPathHint();
-    els.dataSource.textContent = `Data source: ${source} loaded directly in browser from local Codex JSONL files. Default path hint: ${hint}.`;
+    const costSource = payload.costSource === "ccusage"
+      ? "Cost calculated by backend ccusage."
+      : "Cost estimated in browser.";
+    els.dataSource.textContent = `Data source: ${source} loaded from local Codex JSONL files. Default path hint: ${hint}. ${costSource}`;
     return;
   }
   const sources = (payload.codexHomes || []).map((item) => item.home).join(", ");
@@ -541,6 +544,55 @@ async function parseSessionJsonlFile(fileHandle, relativePath, scopeName) {
   }
 
   return turns;
+}
+
+async function readCostPayloadFiles(fileEntries) {
+  const files = [];
+  for (let index = 0; index < fileEntries.length; index += 1) {
+    if (index % 40 === 0) {
+      els.status.textContent = `Preparing local .codex files for backend cost calculation... ${index}/${fileEntries.length}`;
+    }
+    const entry = fileEntries[index];
+    const file = await entry.handle.getFile();
+    files.push({
+      relativePath: entry.relativePath,
+      content: await file.text(),
+    });
+  }
+  return files;
+}
+
+async function calculateCostWithBackend(fileEntries, localSourceLabel, codexHandle) {
+  const files = await readCostPayloadFiles(fileEntries);
+  try {
+    const configHandle = await codexHandle.getFileHandle("config.toml", { create: false });
+    const configFile = await configHandle.getFile();
+    files.push({
+      relativePath: "config.toml",
+      content: await configFile.text(),
+    });
+  } catch {
+    // config.toml is optional; ccusage can still calculate with explicit speed modes.
+  }
+  els.status.textContent = "Calculating cost with backend ccusage...";
+
+  const response = await fetch("/api/cost", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      speed: state.speed,
+      sourceLabel: localSourceLabel,
+      files,
+    }),
+  });
+  const isJson = (response.headers.get("content-type") || "").includes("application/json");
+  const payload = isJson ? await response.json() : null;
+
+  if (!response.ok || !payload) {
+    throw new Error(payload?.detail || payload?.error || "Backend cost calculation is unavailable.");
+  }
+
+  return payload;
 }
 
 function aggregateLocalTurns(turns, localSourceLabel) {
@@ -724,29 +776,39 @@ async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
       throw new Error("No .jsonl session files found under .codex/sessions or .codex/archived_sessions.");
     }
 
-    const turns = [];
-    for (let index = 0; index < fileEntries.length; index += 1) {
-      if (index % 40 === 0) {
-        els.status.textContent = `Reading local .codex files... ${index}/${fileEntries.length}`;
+    let data;
+    try {
+      data = await calculateCostWithBackend(fileEntries, localSourceLabel, codexHandle);
+    } catch (backendError) {
+      els.status.textContent = `Backend ccusage unavailable. Reading local .codex files in browser...`;
+      const turns = [];
+      for (let index = 0; index < fileEntries.length; index += 1) {
+        if (index % 40 === 0) {
+          els.status.textContent = `Reading local .codex files... ${index}/${fileEntries.length}`;
+        }
+        const entry = fileEntries[index];
+        const parsed = await parseSessionJsonlFile(entry.handle, entry.relativePath, entry.scopeName);
+        turns.push(...parsed);
       }
-      const entry = fileEntries[index];
-      const parsed = await parseSessionJsonlFile(entry.handle, entry.relativePath, entry.scopeName);
-      turns.push(...parsed);
-    }
 
-    if (!turns.length) {
-      throw new Error("No usable token usage records were found in selected .codex files.");
+      if (!turns.length) {
+        throw new Error("No usable token usage records were found in selected .codex files.");
+      }
+      data = aggregateLocalTurns(turns, localSourceLabel);
+      data.costSource = "browser-estimate";
+      data.backendCostError = backendError.message;
     }
 
     state.localCodexHandle = codexHandle;
     state.localSourceLabel = localSourceLabel;
     state.sourceMode = "local";
-    state.data = aggregateLocalTurns(turns, localSourceLabel);
+    state.data = data;
     initializeModelVisibility();
     populateModelFilter();
     syncControls();
     renderDataSource(state.data);
-    els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex`;
+    const costSource = state.data.costSource === "ccusage" ? "backend ccusage" : "browser estimate";
+    els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}`;
     render();
   } catch (error) {
     els.status.classList.add("error");

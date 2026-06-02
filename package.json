@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Local browser dashboard for Codex usage powered by ccusage.",
   "main": "server.js",
+  "engines": {
+    "node": ">=22 <27"
+  },
   "scripts": {
     "dashboard": "node server.js",
     "start": "node server.js",

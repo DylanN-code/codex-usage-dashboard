@@ -809,10 +809,11 @@ function applyLocalUsageData(data, codexHandle, localSourceLabel) {
   state.data = data;
   initializeModelVisibility();
   populateModelFilter();
+  const filterResetMessage = clearFiltersIfLoadedDataIsHidden();
   syncControls();
   renderDataSource(state.data);
   const costSource = state.data.costSource === "ccusage" ? "backend ccusage" : "browser estimate";
-  els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}`;
+  els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}.${filterResetMessage}`;
   render();
 }
 
@@ -1084,6 +1085,28 @@ function populateModelFilter() {
   els.modelSelect.value = state.filters.model;
 }
 
+function hasActiveFilters() {
+  return Boolean(
+    state.filters.q
+    || state.filters.start
+    || state.filters.end
+    || state.filters.model !== "all",
+  );
+}
+
+function clearFiltersIfLoadedDataIsHidden() {
+  if (!state.data || !hasActiveFilters()) return "";
+  const loadedRows = [
+    ...sourceRows("daily"),
+    ...sourceRows("monthly"),
+    ...sourceRows("sessions"),
+  ];
+  if (!loadedRows.length || loadedRows.some(rowMatchesFilters)) return "";
+
+  state.filters = { q: "", start: "", end: "", model: "all" };
+  return " Active filters were cleared because they hid all loaded rows.";
+}
+
 async function loadUsage() {
   setLoading(true);
   els.status.classList.remove("error");
@@ -1112,9 +1135,10 @@ async function loadUsage() {
     state.sourceMode = "api";
     initializeModelVisibility();
     populateModelFilter();
+    const filterResetMessage = clearFiltersIfLoadedDataIsHidden();
     syncControls();
     renderDataSource({ ...payload, apiBase: base });
-    els.status.textContent = `Updated ${new Date(payload.generatedAt).toLocaleString()}`;
+    els.status.textContent = `Updated ${new Date(payload.generatedAt).toLocaleString()}.${filterResetMessage}`;
     render();
   } catch (error) {
     els.status.classList.add("error");

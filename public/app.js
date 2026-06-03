@@ -566,11 +566,12 @@ async function postJson(endpoint, body) {
 }
 
 async function uploadCostFile(uploadId, relativePath, file) {
+  const encodeText = uploadUtils?.encodePayloadText || ((content) => ({ content }));
   if (uploadUtils?.shouldChunkFile(file.size, COST_UPLOAD_CHUNK_BYTES)) {
     const ranges = uploadUtils.chunkRanges(file.size, COST_UPLOAD_CHUNK_BYTES);
     for (let chunkIndex = 0; chunkIndex < ranges.length; chunkIndex += 1) {
       const { start, end } = ranges[chunkIndex];
-      const encoded = await uploadUtils.encodePayloadText(await file.slice(start, end).text());
+      const encoded = await encodeText(await file.slice(start, end).text());
       await postJson("/api/cost-upload/chunk", {
         uploadId,
         relativePath,
@@ -582,7 +583,7 @@ async function uploadCostFile(uploadId, relativePath, file) {
     return;
   }
 
-  const encoded = await uploadUtils.encodePayloadText(await file.text());
+  const encoded = await encodeText(await file.text());
   await postJson("/api/cost-upload/file", {
     uploadId,
     file: {
@@ -811,10 +812,7 @@ function applyLocalUsageData(data, codexHandle, localSourceLabel) {
   syncControls();
   renderDataSource(state.data);
   const costSource = state.data.costSource === "ccusage" ? "backend ccusage" : "browser estimate";
-  const scope = state.data.localFileScope && state.data.localFileScope.matchedFiles < state.data.localFileScope.totalFiles
-    ? ` (${state.data.localFileScope.matchedFiles}/${state.data.localFileScope.totalFiles} files matched date filters)`
-    : "";
-  els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}${scope}`;
+  els.status.textContent = `Updated ${new Date(state.data.generatedAt).toLocaleString()} from local .codex using ${costSource}`;
   render();
 }
 
@@ -856,37 +854,17 @@ async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
       throw new Error("No .jsonl session files found under .codex/sessions or .codex/archived_sessions.");
     }
 
-    const scopedEntries = uploadUtils?.filterEntriesByDateRange
-      ? uploadUtils.filterEntriesByDateRange(fileEntries, state.filters.start, state.filters.end)
-      : fileEntries;
-    const activeDateScope = Boolean(state.filters.start || state.filters.end);
-    if (activeDateScope && !scopedEntries.length) {
-      throw new Error("No .jsonl session files match the selected date filters.");
-    }
-    if (activeDateScope && scopedEntries.length < fileEntries.length) {
-      const skipped = fileEntries.length - scopedEntries.length;
-      els.status.textContent = `Date filters matched ${scopedEntries.length}/${fileEntries.length} local .codex files, skipping ${skipped} outside the selected range.`;
-    }
-
     let data;
     try {
-      data = await calculateCostWithBackend(scopedEntries, localSourceLabel, codexHandle);
-      data.localFileScope = activeDateScope
-        ? {
-            start: state.filters.start,
-            end: state.filters.end,
-            matchedFiles: scopedEntries.length,
-            totalFiles: fileEntries.length,
-          }
-        : null;
+      data = await calculateCostWithBackend(fileEntries, localSourceLabel, codexHandle);
     } catch (backendError) {
       els.status.textContent = `Backend ccusage unavailable. Reading local .codex files in browser...`;
       const turns = [];
-      for (let index = 0; index < scopedEntries.length; index += 1) {
+      for (let index = 0; index < fileEntries.length; index += 1) {
         if (index % 40 === 0) {
-          els.status.textContent = `Reading local .codex files... ${index}/${scopedEntries.length}`;
+          els.status.textContent = `Reading local .codex files... ${index}/${fileEntries.length}`;
         }
-        const entry = scopedEntries[index];
+        const entry = fileEntries[index];
         const parsed = await parseSessionJsonlFile(entry.handle, entry.relativePath, entry.scopeName);
         turns.push(...parsed);
       }
@@ -897,14 +875,6 @@ async function loadUsageFromLocalHandle(codexHandle, localSourceLabel) {
       data = aggregateLocalTurns(turns, localSourceLabel);
       data.costSource = "browser-estimate";
       data.backendCostError = backendError.message;
-      data.localFileScope = activeDateScope
-        ? {
-            start: state.filters.start,
-            end: state.filters.end,
-            matchedFiles: scopedEntries.length,
-            totalFiles: fileEntries.length,
-          }
-        : null;
       state.localCostUploadSession = null;
     }
 
@@ -1388,6 +1358,7 @@ function renderModelPie() {
   const rows = aggregateModels();
   const visibleRows = rows.filter((row) => state.modelVisible[row.model] ?? true);
   const total = sum(visibleRows, "totalTokens");
+  const visibleCost = sum(visibleRows, "costUSD");
   const colors = [cssVar("--teal"), cssVar("--blue"), cssVar("--amber"), cssVar("--coral"), cssVar("--teal-dark")];
 
   if (!rows.length) {
@@ -1410,9 +1381,10 @@ function renderModelPie() {
     const next = angle + (number(row.totalTokens) / total) * Math.PI * 2;
     const percent = number(row.totalTokens) / total;
     const color = colors[index % colors.length];
+    const tooltip = `${row.model}: ${formatPercent(percent)}\nTokens: ${formatCompact(row.totalTokens)}\nCost: ${formatMoney(row.costUSD)}`;
     const path = percent >= 0.999
-      ? `<circle data-tooltip="${escapeHtml(`${row.model}: ${formatPercent(percent)} (${formatCompact(row.totalTokens)})`)}" cx="170" cy="150" r="112" fill="${color}"></circle>`
-      : `<path data-tooltip="${escapeHtml(`${row.model}: ${formatPercent(percent)} (${formatCompact(row.totalTokens)})`)}" d="${pieSlicePath(170, 150, 112, angle, next)}" fill="${color}"></path>`;
+      ? `<circle data-tooltip="${escapeHtml(tooltip)}" cx="170" cy="150" r="112" fill="${color}"></circle>`
+      : `<path data-tooltip="${escapeHtml(tooltip)}" d="${pieSlicePath(170, 150, 112, angle, next)}" fill="${color}"></path>`;
     angle = next;
     return path;
   }).join("");
@@ -1423,12 +1395,13 @@ function renderModelPie() {
     const percent = activeRow ? number(activeRow.totalTokens) / total : 0;
     return `
       <button class="legend-toggle${visible ? " active" : ""}" data-model-key="${escapeHtml(row.model)}" type="button" aria-pressed="${visible ? "true" : "false"}">
-        <i style="background:${colors[index % colors.length]}"></i>${escapeHtml(row.model)} ${activeRow ? formatPercent(percent) : "0%"}
+        <i style="background:${colors[index % colors.length]}"></i>${escapeHtml(row.model)} ${activeRow ? formatPercent(percent) : "0%"} - ${formatMoney(visible ? row.costUSD : 0)}
       </button>
     `;
   }).join("");
 
   els.modelPie.innerHTML = `
+    <div class="chart-cost-line">Estimated cost across selected models: <strong>${formatMoney(visibleCost)}</strong></div>
     <svg viewBox="0 0 480 300" aria-hidden="true">${slices}</svg>
     <div class="chart-legend">${legend}</div>
   `;
@@ -1451,6 +1424,7 @@ function renderBillingChart() {
     rows.push(byDate.get(iso) || {
       date: iso,
       cachedInputTokens: 0,
+      costUSD: 0,
       inputTokens: 0,
       outputTokens: 0,
       reasoningOutputTokens: 0,
@@ -1471,6 +1445,7 @@ function renderBillingChart() {
   };
   const visibleKeys = keys.filter((key) => state.billingVisible[key]);
   const max = Math.max(...rows.map((row) => visibleKeys.reduce((total, key) => total + number(row[key]), 0)), 0);
+  const totalCost = sum(rows, "costUSD");
 
   if (!visibleKeys.length) {
     const legendOnly = keys.map((key) => `
@@ -1501,7 +1476,8 @@ function renderBillingChart() {
     const parts = visibleKeys.map((key) => {
       const h = (number(row[key]) / max) * plotHeight;
       y -= h;
-      return `<rect data-tooltip="${escapeHtml(`${row.date}\n${labels[key]}: ${formatCompact(row[key])}`)}" x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="3" fill="${colors[key]}"></rect>`;
+      const tooltip = `${row.date}\nCost: ${formatMoney(row.costUSD)}\n${labels[key]}: ${formatCompact(row[key])}`;
+      return `<rect data-tooltip="${escapeHtml(tooltip)}" x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="3" fill="${colors[key]}"></rect>`;
     }).join("");
     const showTick = rows.length <= 12 || index % 2 === 0;
     const tick = showTick
@@ -1516,6 +1492,7 @@ function renderBillingChart() {
     </button>
   `).join("");
   els.billingChart.innerHTML = `
+    <div class="chart-cost-line">Estimated cost over last 30 days: <strong>${formatMoney(totalCost)}</strong></div>
     <svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
       <line x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top + plotHeight}" y2="${pad.top + plotHeight}" stroke="${cssVar("--line")}"></line>
       ${bars}
@@ -1652,7 +1629,8 @@ function renderActivityHeatmap() {
       const row = byDate.get(date);
       const value = number(row?.[metric]);
       const level = max ? Math.ceil((value / max) * 4) : 0;
-      week.push(`<span class="heat-cell level-${level}" data-tooltip="${escapeHtml(`${date}\n${metricLabels[metric]}: ${formatMetric(value, metric)}`)}"></span>`);
+      const tooltip = `${date}\n${metricLabels[metric]}: ${formatMetric(value, metric)}\nCost: ${formatMoney(row?.costUSD || 0)}`;
+      week.push(`<span class="heat-cell level-${level}" data-tooltip="${escapeHtml(tooltip)}"></span>`);
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
     weeks.push(`<div class="heat-week">${week.join("")}</div>`);
@@ -1667,6 +1645,7 @@ function renderActivityHeatmap() {
   const mostActiveMonth = Object.entries(byMonth).sort((a, b) => b[1] - a[1])[0]?.[0] || "-";
   const mostActiveDay = windowRows.reduce((best, row) => number(row[metric]) > number(best?.[metric]) ? row : best, null);
   const streak = streaks(windowRows);
+  const windowCost = sum(windowRows, "costUSD");
 
   els.activityHeatmap.innerHTML = `
     <div class="heat-shell">
@@ -1680,6 +1659,7 @@ function renderActivityHeatmap() {
       <div><span>Most Active Day</span><strong>${mostActiveDay ? mostActiveDay.date : "-"}</strong></div>
       <div><span>Longest Streak</span><strong>${streak.longest}d</strong></div>
       <div><span>Current Streak</span><strong>${streak.current}d</strong></div>
+      <div><span>Estimated Cost</span><strong>${formatMoney(windowCost)}</strong></div>
     </div>
     <div class="heat-legend"><span>Fewer</span><i class="level-1"></i><i class="level-2"></i><i class="level-3"></i><i class="level-4"></i><span>More</span></div>
   `;

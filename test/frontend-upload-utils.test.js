@@ -3,9 +3,7 @@ const { test } = require("node:test");
 const {
   DEFAULT_COST_UPLOAD_CHUNK_BYTES,
   chunkRanges,
-  dateFromCodexRelativePath,
   encodePayloadText,
-  filterEntriesByDateRange,
   shouldChunkFile,
 } = require("../public/upload-utils");
 
@@ -28,32 +26,6 @@ test("large files are split into stable frontend upload chunks", () => {
 test("chunk range validation catches invalid frontend inputs", () => {
   assert.throws(() => chunkRanges(-1), /non-negative/);
   assert.throws(() => chunkRanges(10, 0), /positive/);
-});
-
-test("extracts dates from Codex relative paths", () => {
-  assert.equal(
-    dateFromCodexRelativePath("sessions/2026/06/01/rollout-2026-06-01T00-00-00-demo.jsonl"),
-    "2026-06-01",
-  );
-  assert.equal(
-    dateFromCodexRelativePath("archived_sessions/rollout-2026-05-24T17-52-20-demo.jsonl"),
-    "2026-05-24",
-  );
-  assert.equal(dateFromCodexRelativePath("sessions/unknown.jsonl"), "");
-});
-
-test("filters upload entries by selected date range", () => {
-  const entries = [
-    { relativePath: "sessions/2026/05/24/a.jsonl" },
-    { relativePath: "sessions/2026/06/01/b.jsonl" },
-    { relativePath: "archived_sessions/rollout-2026-06-03T00-00-00-c.jsonl" },
-    { relativePath: "sessions/unknown.jsonl" },
-  ];
-
-  assert.deepEqual(
-    filterEntriesByDateRange(entries, "2026-06-01", "2026-06-02").map((entry) => entry.relativePath),
-    ["sessions/2026/06/01/b.jsonl", "sessions/unknown.jsonl"],
-  );
 });
 
 test("payload encoding falls back to raw text without CompressionStream", async () => {

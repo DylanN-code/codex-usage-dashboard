@@ -653,6 +653,17 @@ label {
   gap: 8px 10px;
 }
 
+.chart-cost-line {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: var(--font-small);
+  font-weight: 700;
+}
+
+.chart-cost-line strong {
+  color: var(--ink);
+}
+
 .legend-toggle {
   display: inline-flex;
   align-items: center;
@@ -795,7 +806,7 @@ label {
 
 .activity-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   padding-top: 14px;
   border-top: 1px solid var(--line);

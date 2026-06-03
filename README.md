@@ -73,9 +73,9 @@ After reading those files, the frontend sends the JSONL payload plus optional `.
 
 Performance notes:
 
+- First load, selecting `.codex`, and Refresh reread the full selected `.codex` history so the dashboard and cost totals are rebuilt from current local data.
 - Switching between Auto, Standard, and Fast reuses the existing backend upload session and recalculates cost without rereading local files.
-- Set Start/End date filters before selecting `.codex` to upload only session files whose path date matches the selected range.
-- Use Refresh when you need to reread local files after changing to a wider date range or after the backend upload session expires.
+- Use Refresh when local `.codex` files change or after the backend upload session expires.
 
 The backend validates file count, file size, relative paths, JSONL structure, and speed mode before calculation. Uploaded JSONL files are written only to a temporary `.codex` directory, processed by `ccusage`, and deleted after the response.
 

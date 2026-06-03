@@ -263,6 +263,25 @@ test("upload endpoint accepts gzip-base64 encoded JSONL files", async () => {
   assert.equal(calculated.payload.totals.costUSD, 7.89);
 });
 
+test("upload endpoint rejects unsupported content encodings", async () => {
+  const { payload: session } = await postJson("/api/cost-upload/start", {
+    speed: "standard",
+    sourceLabel: "/tmp/.codex",
+  });
+
+  const { response, payload } = await postJson("/api/cost-upload/file", {
+    uploadId: session.uploadId,
+    file: {
+      relativePath: "sessions/unsupported-encoding.jsonl",
+      content: "{\"type\":\"event\"}\n",
+      contentEncoding: "brotli",
+    },
+  });
+
+  assert.equal(response.status, 400);
+  assert.match(payload.detail, /Unsupported contentEncoding/);
+});
+
 test("chunk endpoint accepts gzip-base64 encoded chunks", async () => {
   const relativePath = "sessions/compressed-chunk.jsonl";
   const content = "{\"type\":\"event\"}\n";
